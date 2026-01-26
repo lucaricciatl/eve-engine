@@ -1,0 +1,102 @@
+#version 460
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+struct BodyState {
+    vec4 positionMass;
+    vec4 velocityAge;
+};
+
+layout(std430, binding = 0) readonly buffer ReadBodies {
+    BodyState bodies[];
+} srcBodies;
+
+layout(std430, binding = 1) writeonly buffer WriteBodies {
+    BodyState bodies[];
+} dstBodies;
+
+layout(push_constant) uniform SimParams {
+    float deltaTime;
+    float gravityConstant;
+    float softening;
+    float damping;
+    float colorCycle;
+    float centerPull;
+    float centerRadius;
+    float confinementFalloff;
+    float maxVelocity;
+    float maxDistance;
+    uint  particleCount;
+    float padding;
+} params;
+
+shared vec4 sharedPosMass[256];
+
+void main()
+{
+    uint index = gl_GlobalInvocationID.x;
+    if (index >= params.particleCount) {
+        return;
+    }
+
+    BodyState current = srcBodies.bodies[index];
+    vec3 acceleration = vec3(0.0f);
+
+    for (uint tileStart = 0u; tileStart < params.particleCount; tileStart += 256u) {
+        uint loadIndex = tileStart + gl_LocalInvocationIndex;
+        if (loadIndex < params.particleCount) {
+            sharedPosMass[gl_LocalInvocationIndex] = srcBodies.bodies[loadIndex].positionMass;
+        }
+        barrier();
+
+        uint tileCount = min(256u, params.particleCount - tileStart);
+        for (uint i = 0u; i < tileCount; ++i) {
+            uint otherIndex = tileStart + i;
+            if (otherIndex == index) {
+                continue;
+            }
+            vec3 offset = sharedPosMass[i].xyz - current.positionMass.xyz;
+            float distSqr = dot(offset, offset) + params.softening;
+            float invDist = inversesqrt(distSqr);
+            float invDist3 = invDist * invDist * invDist;
+            acceleration += offset * (params.gravityConstant * sharedPosMass[i].w * invDist3);
+        }
+        barrier();
+    }
+
+    float distance = length(current.positionMass.xyz);
+    if (distance > 0.0f) {
+        if (distance < params.centerRadius) {
+            acceleration += current.positionMass.xyz * params.centerPull;
+        } else {
+            float overflow = distance - params.centerRadius;
+            float falloff = params.centerPull - params.confinementFalloff * overflow / max(params.centerRadius, 1.0f);
+            acceleration += current.positionMass.xyz * falloff;
+        }
+    }
+
+    vec3 velocity = current.velocityAge.xyz + acceleration * params.deltaTime;
+    velocity *= params.damping;
+    float speed = length(velocity);
+    if (speed > params.maxVelocity && speed > 1e-4f) {
+        velocity *= params.maxVelocity / speed;
+    }
+
+    vec3 position = current.positionMass.xyz + velocity * params.deltaTime;
+    float limit = params.maxDistance;
+    float posLength = length(position);
+    if (posLength > limit && limit > 0.0f) {
+        position = position / posLength * limit;
+        velocity *= 0.75f;
+    }
+
+    float age = current.velocityAge.w + params.deltaTime;
+    if (age >= params.colorCycle && params.colorCycle > 0.0f) {
+        age = mod(age, params.colorCycle);
+    }
+
+    BodyState result;
+    result.positionMass = vec4(position, current.positionMass.w);
+    result.velocityAge = vec4(velocity, age);
+    dstBodies.bodies[index] = result;
+}
