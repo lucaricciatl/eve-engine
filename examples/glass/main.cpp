@@ -1,6 +1,6 @@
 #include "engine/GameEngine.hpp"
 #include "engine/HeadlessCapture.hpp"
-#include "VulkanRenderer.hpp"
+#include "core/VulkanRenderer.hpp"
 
 #include <glm/glm.hpp>
 #include <glm/gtc/constants.hpp>
@@ -42,32 +42,35 @@ try {
     glassCenter.transform().position = glm::vec3{0.0f, 0.6f, 0.0f};
     glassCenter.transform().scale = glm::vec3{1.2f, 1.2f, 1.2f};
     glassCenter.setMeshResource("assets/models/demo_cube.stl");
+    glassCenter.setMaterial("glass");
     glassCenter.setBaseColor(glm::vec4{0.6f, 0.8f, 1.0f, 0.25f});
 
     auto& glassLeft = engine.createObject("GlassLeft", vkengine::MeshType::CustomMesh);
     glassLeft.transform().position = glm::vec3{-2.5f, 0.4f, 0.5f};
     glassLeft.transform().scale = glm::vec3{0.9f, 0.9f, 0.9f};
     glassLeft.setMeshResource("assets/models/demo_cube.stl");
+    glassLeft.setMaterial("glass");
     glassLeft.setBaseColor(glm::vec4{0.45f, 0.9f, 0.7f, 0.2f});
 
     auto& glassRight = engine.createObject("GlassRight", vkengine::MeshType::CustomMesh);
     glassRight.transform().position = glm::vec3{2.5f, 0.7f, 0.3f};
     glassRight.transform().scale = glm::vec3{1.0f, 1.0f, 1.0f};
     glassRight.setMeshResource("assets/models/demo_cube.stl");
+    glassRight.setMaterial("glass");
     glassRight.setBaseColor(glm::vec4{0.9f, 0.7f, 1.0f, 0.22f});
 
     vkengine::LightCreateInfo keyLight{};
     keyLight.name = "KeyLight";
     keyLight.position = glm::vec3{3.0f, 4.5f, 3.0f};
     keyLight.color = glm::vec3{1.0f, 0.96f, 0.9f};
-    keyLight.intensity = 5.0f;
+    keyLight.intensity = 0.2f;
     scene.createLight(keyLight);
 
     vkengine::LightCreateInfo rimLight{};
     rimLight.name = "RimLight";
     rimLight.position = glm::vec3{-4.0f, 2.5f, -2.5f};
     rimLight.color = glm::vec3{0.6f, 0.8f, 1.0f};
-    rimLight.intensity = 2.5f;
+    rimLight.intensity = 0.2f;
     scene.createLight(rimLight);
 
     std::cout << "\n=== Glass Example ===\n";

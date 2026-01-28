@@ -20,6 +20,19 @@ class Registry;
 
 namespace vkengine {
 
+enum class ParticleShape : std::uint32_t {
+    SoftCircle = 0,
+    SoftSquare = 1,
+    Diamond = 2
+};
+
+enum class ParticleRenderMode : std::uint32_t {
+    Billboard = 0,
+    Mesh = 1
+};
+
+constexpr std::size_t kParticleShapeCount = 3;
+
 struct Particle {
     glm::vec3 position{0.0f};
     glm::vec3 velocity{0.0f};
@@ -47,6 +60,25 @@ public:
         }
     }
     void setEmissionRate(float particlesPerSecond) noexcept { emissionRate = particlesPerSecond; }
+    void setShape(ParticleShape shape) noexcept { particleShape = shape; }
+    void setRenderMode(ParticleRenderMode mode) noexcept { renderMode = mode; }
+    void setMeshType(MeshType type) noexcept { meshType = type; }
+    void setMeshResource(const std::string& path) { meshResource = path; }
+    void setMeshScale(float scale) noexcept { meshScale = std::max(0.01f, scale); }
+    void setStartColor(const glm::vec4& color) noexcept { startColorValue = color; }
+    void setEndColor(const glm::vec4& color) noexcept { endColorValue = color; }
+    void setColorGradient(const glm::vec4& start, const glm::vec4& end) noexcept
+    {
+        startColorValue = start;
+        endColorValue = end;
+    }
+    [[nodiscard]] ParticleShape shape() const noexcept { return particleShape; }
+    [[nodiscard]] ParticleRenderMode renderModeValue() const noexcept { return renderMode; }
+    [[nodiscard]] MeshType meshTypeValue() const noexcept { return meshType; }
+    [[nodiscard]] const std::string& meshResourceValue() const noexcept { return meshResource; }
+    [[nodiscard]] float meshScaleValue() const noexcept { return meshScale; }
+    [[nodiscard]] const glm::vec4& getStartColor() const noexcept { return startColorValue; }
+    [[nodiscard]] const glm::vec4& getEndColor() const noexcept { return endColorValue; }
     void setLifetimeRange(float minLifetimeSeconds, float maxLifetimeSeconds) noexcept;
     void setSpeedRange(float minSpeed, float maxSpeed) noexcept;
     void setSpread(float radians) noexcept { spread = radians; }
@@ -89,6 +121,13 @@ private:
     std::vector<Particle> particlePool;
     std::vector<glm::vec3> accelerationScratch;
     bool needsWarmStart{true};
+    ParticleShape particleShape{ParticleShape::SoftCircle};
+    ParticleRenderMode renderMode{ParticleRenderMode::Billboard};
+    MeshType meshType{MeshType::Cube};
+    std::string meshResource{};
+    float meshScale{0.12f};
+    glm::vec4 startColorValue{1.0f, 0.85f, 0.45f, 1.0f};
+    glm::vec4 endColorValue{0.2f, 0.05f, 0.02f, 0.0f};
 
     std::mt19937 rng;
     std::uniform_real_distribution<float> uniform{0.0f, 1.0f};
@@ -101,6 +140,25 @@ public:
     ParticleEmitter& createEmitter(const std::string& name);
 
     void update(float deltaSeconds);
+
+    template <typename Func>
+    void forEachAliveParticleWithEmitter(Func&& func) const
+    {
+        if (ecsRegistry == nullptr) {
+            return;
+        }
+        ecsRegistry->view<ParticleEmitterComponent>([&](auto, ParticleEmitterComponent& component) {
+            if (!component.enabled || !component.emitter) {
+                return;
+            }
+            const auto& emitter = *component.emitter;
+            for (const auto& particle : component.emitter->particles()) {
+                if (particle.alive()) {
+                    func(emitter, particle);
+                }
+            }
+        });
+    }
 
     template <typename Func>
     void forEachAliveParticle(Func&& func) const

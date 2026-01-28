@@ -24,9 +24,10 @@ struct ParticleVertex {
     glm::vec3 pos;
     glm::vec2 uv;
     glm::vec4 color;
+    float shape{0.0f};
 
     static VkVertexInputBindingDescription bindingDescription();
-    static std::array<VkVertexInputAttributeDescription, 3> attributeDescriptions();
+    static std::array<VkVertexInputAttributeDescription, 4> attributeDescriptions();
 };
 
 } // namespace vkcore

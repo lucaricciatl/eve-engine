@@ -363,6 +363,73 @@ float Light::intensity() const
     return registry().get<LightComponent>(entityHandle).intensity;
 }
 
+void Light::setType(LightType newType)
+{
+    registry().get<LightComponent>(entityHandle).type = newType;
+}
+
+LightType Light::type() const
+{
+    return registry().get<LightComponent>(entityHandle).type;
+}
+
+void Light::setDirection(const glm::vec3& newDirection)
+{
+    registry().get<LightComponent>(entityHandle).direction = newDirection;
+}
+
+const glm::vec3& Light::direction() const
+{
+    return registry().get<LightComponent>(entityHandle).direction;
+}
+
+void Light::setRange(float newRange)
+{
+    registry().get<LightComponent>(entityHandle).range = newRange;
+}
+
+float Light::range() const
+{
+    return registry().get<LightComponent>(entityHandle).range;
+}
+
+void Light::setConeAngles(float innerRadians, float outerRadians)
+{
+    auto& component = registry().get<LightComponent>(entityHandle);
+    component.innerConeAngle = innerRadians;
+    component.outerConeAngle = outerRadians;
+}
+
+float Light::innerConeAngle() const
+{
+    return registry().get<LightComponent>(entityHandle).innerConeAngle;
+}
+
+float Light::outerConeAngle() const
+{
+    return registry().get<LightComponent>(entityHandle).outerConeAngle;
+}
+
+void Light::setAreaSize(const glm::vec2& newSize)
+{
+    registry().get<LightComponent>(entityHandle).areaSize = newSize;
+}
+
+const glm::vec2& Light::areaSize() const
+{
+    return registry().get<LightComponent>(entityHandle).areaSize;
+}
+
+void Light::setUp(const glm::vec3& newUp)
+{
+    registry().get<LightComponent>(entityHandle).up = newUp;
+}
+
+const glm::vec3& Light::up() const
+{
+    return registry().get<LightComponent>(entityHandle).up;
+}
+
 void Light::setEnabled(bool value)
 {
     registry().get<LightComponent>(entityHandle).enabled = value;
@@ -470,6 +537,13 @@ Light& Scene::createLight(const LightCreateInfo& info)
     component.position = info.position;
     component.color = info.color;
     component.intensity = info.intensity;
+    component.type = info.type;
+    component.direction = info.direction;
+    component.range = info.range;
+    component.innerConeAngle = info.innerConeAngle;
+    component.outerConeAngle = info.outerConeAngle;
+    component.areaSize = info.areaSize;
+    component.up = info.up;
     component.enabled = info.enabled;
     ecsRegistry.emplace<LightComponent>(entity, std::move(component));
     sceneLights.emplace_back(*this, entity);

@@ -14,6 +14,8 @@
 #include <string>
 #include <vector>
 
+#include <lunasvg.h>
+
 #include <windows.h>
 #include <wincodec.h>
 #include <wrl/client.h>
@@ -154,6 +156,48 @@ TextureData loadWithStb(const std::filesystem::path& path, bool flipVertical)
     return texture;
 }
 
+TextureData loadSvgWithLuna(const std::filesystem::path& path, bool flipVertical)
+{
+    std::ifstream file(path, std::ios::binary);
+    if (!file) {
+        throw std::runtime_error("Failed to open SVG file: " + path.string());
+    }
+    std::string svgData((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    if (svgData.empty()) {
+        throw std::runtime_error("SVG file is empty: " + path.string());
+    }
+
+    auto document = lunasvg::Document::loadFromData(svgData);
+    if (!document) {
+        throw std::runtime_error("Failed to parse SVG: " + path.string());
+    }
+
+    int width = static_cast<int>(document->width());
+    int height = static_cast<int>(document->height());
+    if (width <= 0 || height <= 0) {
+        width = 512;
+        height = 512;
+    }
+
+    lunasvg::Bitmap bitmap = document->renderToBitmap(width, height);
+    if (!bitmap.valid()) {
+        throw std::runtime_error("Failed to render SVG: " + path.string());
+    }
+
+    TextureData texture{};
+    texture.width = static_cast<std::uint32_t>(bitmap.width());
+    texture.height = static_cast<std::uint32_t>(bitmap.height());
+    texture.channels = 4;
+    const std::size_t byteCount = static_cast<std::size_t>(texture.width) * texture.height * 4;
+    texture.pixels.assign(bitmap.data(), bitmap.data() + byteCount);
+
+    if (flipVertical) {
+        flipRows(texture);
+    }
+
+    return texture;
+}
+
 TextureData loadTexture(const std::filesystem::path& path, bool flipVertical)
 {
     if (!std::filesystem::exists(path)) {
@@ -169,6 +213,9 @@ TextureData loadTexture(const std::filesystem::path& path, bool flipVertical)
 
     // Fast path for common formats via WIC (jpg/png/bmp/etc.)
     if (extension != ".ppm" && extension != ".pnm") {
+        if (extension == ".svg") {
+            return loadSvgWithLuna(path, flipVertical);
+        }
         return loadWithStb(path, flipVertical);
     }
 

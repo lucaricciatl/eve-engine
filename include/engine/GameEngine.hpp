@@ -80,6 +80,25 @@ public:
     void setIntensity(float newIntensity);
     [[nodiscard]] float intensity() const;
 
+    void setType(LightType newType);
+    [[nodiscard]] LightType type() const;
+
+    void setDirection(const glm::vec3& newDirection);
+    [[nodiscard]] const glm::vec3& direction() const;
+
+    void setRange(float newRange);
+    [[nodiscard]] float range() const;
+
+    void setConeAngles(float innerRadians, float outerRadians);
+    [[nodiscard]] float innerConeAngle() const;
+    [[nodiscard]] float outerConeAngle() const;
+
+    void setAreaSize(const glm::vec2& newSize);
+    [[nodiscard]] const glm::vec2& areaSize() const;
+
+    void setUp(const glm::vec3& newUp);
+    [[nodiscard]] const glm::vec3& up() const;
+
     void setEnabled(bool value);
     [[nodiscard]] bool isEnabled() const;
 
@@ -97,7 +116,14 @@ struct LightCreateInfo {
     std::string name;
     glm::vec3 position{0.0f, 3.0f, 0.0f};
     glm::vec3 color{1.0f};
-    float intensity{3.0f};
+    float intensity{2.0f};
+    LightType type{LightType::Point};
+    glm::vec3 direction{0.0f, -1.0f, 0.0f};
+    float range{18.0f};
+    float innerConeAngle{0.261799f};
+    float outerConeAngle{0.523599f};
+    glm::vec2 areaSize{1.2f, 1.2f};
+    glm::vec3 up{0.0f, 1.0f, 0.0f};
     bool enabled{true};
 };
 

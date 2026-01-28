@@ -15,9 +15,15 @@ layout(std140, binding = 0) uniform CameraBuffer {
     mat4 view;
     mat4 proj;
     mat4 lightViewProj;
+    mat4 reflectionViewProj;
     vec4 cameraPosition;
-    vec4 lightPosition;
-    vec4 lightColorIntensity;
+    vec4 reflectionPlane;
+    vec4 lightPositions[4];
+    vec4 lightColors[4];
+    vec4 lightDirections[4];
+    vec4 lightSpotAngles[4];
+    vec4 lightAreaParams[4];
+    vec4 lightParams;
     vec4 shadingParams;
     vec4 fogColor;
     vec4 fogParams;
@@ -28,6 +34,7 @@ layout(push_constant) uniform ObjectPush {
     vec4 baseColor;
     vec4 materialParams;
     vec4 emissiveParams;
+    vec4 mirrorParams;
 } objectData;
 
 void main() {

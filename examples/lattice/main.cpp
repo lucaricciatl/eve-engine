@@ -1,7 +1,7 @@
 #include "engine/GameEngine.hpp"
 #include "engine/HeadlessCapture.hpp"
 #include "core/ecs/Components.hpp"
-#include "VulkanRenderer.hpp"
+#include "core/VulkanRenderer.hpp"
 #include "ui/Ui.hpp"
 #include "ui/Mouse.hpp"
 
@@ -445,7 +445,7 @@ std::vector<vkengine::GameObject*> buildLattice(LatticeEngine& engine, int sizeX
     keyLightInfo.name = "KeyLight";
     keyLightInfo.position = glm::vec3{25.0f, 35.0f, 25.0f};  // Far away for softer shadows
     keyLightInfo.color = LIGHT_COLOR_3000K;                   // 3000K warm white
-    keyLightInfo.intensity = 4.5f;                            // Adjusted for warm light
+    keyLightInfo.intensity = 2.25f;                            // Adjusted for warm light
     scene.createLight(keyLightInfo);
 
     return sphereObjects;

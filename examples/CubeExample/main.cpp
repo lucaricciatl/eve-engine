@@ -53,7 +53,7 @@ try {
     keyLightInfo.name = "KeyLight";
     keyLightInfo.position = glm::vec3{2.0f, 4.0f, 2.0f};
     keyLightInfo.color = glm::vec3{1.0f, 0.95f, 0.85f};
-    keyLightInfo.intensity = 4.0f;
+    keyLightInfo.intensity = 2.0f;
     auto& keyLight = scene.createLight(keyLightInfo);
 
     VulkanCubeApp renderer(engine);

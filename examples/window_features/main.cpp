@@ -1,6 +1,6 @@
 #include "engine/GameEngine.hpp"
 #include "engine/HeadlessCapture.hpp"
-#include "VulkanRenderer.hpp"
+#include "core/VulkanRenderer.hpp"
 
 #include <glm/gtc/matrix_transform.hpp>
 
@@ -92,7 +92,7 @@ void buildScene(vkengine::GameEngine& engine)
     key.name = "Key";
     key.position = {3.0f, 4.0f, 2.0f};
     key.color = {1.0f, 0.95f, 0.85f};
-    key.intensity = 6.0f;
+    key.intensity = 3.0f;
     scene.createLight(key);
 }
 

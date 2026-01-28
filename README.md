@@ -25,6 +25,7 @@ The shaders are compiled into SPIR-V binaries under `build/shaders/`. The build 
 - `build/Debug/DeformableExample.exe` – showcases both the suspended cloth and the volumetric "jelly cube" driven by the soft-body simulation stack
 - `build/Debug/NBodyExample.exe` – a fully GPU-driven N-body simulation that updates and renders tens of thousands of particles every frame via Vulkan compute shaders
 - `build/Debug/LightsExample.exe` – quick-start showcase for the `LightCreateInfo` workflow, highlighting multiple animated lights
+- `build/Debug/ReflectionsExample.exe` – mirror-plane vignette that pairs a cube with its reflected twin
 - `build/Debug/GlassExample.exe` – glass-like shading demo using fresnel-tinted transparency
 - `build/Debug/PhysicsExample.exe` – rigid-body stress test where a wrecking ball topples a cube tower with rotational, elastic collisions and Coulomb friction
 - `build/Debug/EmittingBodiesExample.exe` – interactive scene where emissive spheres act as the only light sources, and you can drag them across a matte plane with the mouse
@@ -33,6 +34,9 @@ The shaders are compiled into SPIR-V binaries under `build/shaders/`. The build 
 - `build/Debug/SkyBackgroundExample.exe` – shows how to set a sky/background color via `setSkyColor`
 - `build/Debug/SkyImageBackgroundExample.exe` – loads `assets/skys/sky.jpg`, averages its color, and uses it as the background
 - `build/Debug/VolumetricFogExample.exe` – height-based volumetric fog with adjustable density, color, and falloff
+- `build/Debug/ShaderStylesExample.exe` – cycles toon, rim, heat-map, gradient, wireframe, and glow shader styles
+- `build/Debug/TerminalAppExample.exe` – simple console app that reads input and prints text responses
+- `build/Debug/InAppConsoleExample.exe` – in-app Vulkan-rendered console overlay (input + output)
 
 ## Running
 
@@ -43,12 +47,16 @@ After a successful build, launch the sample from the build directory so it can l
 ./build/ParticleExample.exe
 ./build/NBodyExample.exe
 ./build/LightsExample.exe
+./build/ReflectionsExample.exe
 ./build/GlassExample.exe
 ./build/PhysicsExample.exe
 ./build/EmittingBodiesExample.exe
 ./build/DrawOverlayExample.exe
 ./build/WindowFeaturesExample.exe --borderless --transparent
 ./build/VolumetricFogExample.exe
+./build/ShaderStylesExample.exe
+./build/TerminalAppExample.exe
+./build/InAppConsoleExample.exe
 ```
 
 The cube example renders a static ground slab, a falling cube affected by gravity, and a drifting cube with an initial sideways velocity. Lighting combines diffuse and specular terms, feeds from the shared camera buffer, and now includes a shadow map rendered from the active light each frame so objects cast soft shadows. Use the F1–F4 hotkeys to toggle shadows/specular highlights, freeze or animate the light, and visualize individual shading stages (albedo, normals, and shadow factor) directly on screen.
@@ -58,6 +66,20 @@ Window features demo flags:
 - `--fullscreen` / `--borderless` / `--fixed` – choose mode (default windowed)
 - `--transparent` – request a transparent framebuffer
 - `--no-resize` – disable resizing (unless fixed-size already forces it)
+
+## Gallery
+
+| Glass | Reflections | Materials |
+| --- | --- | --- |
+| ![Glass](tests/test_resources/renders/GlassExample_first_frame.jpg) | ![Reflections](tests/test_resources/renders/ReflectionsExample_first_frame.jpg) | ![Materials](tests/test_resources/renders/MaterialsExample_first_frame.jpg) |
+
+| Volumetric Fog | Shader Styles | Lights |
+| --- | --- | --- |
+| ![Volumetric Fog](tests/test_resources/renders/VolumetricFogExample_first_frame.jpg) | ![Shader Styles](tests/test_resources/renders/ShaderStylesExample_first_frame.jpg) | ![Lights](tests/test_resources/renders/LightsExample_first_frame.jpg) |
+
+| Emitting Bodies | Draw Overlay | Sky Image |
+| --- | --- | --- |
+| ![Emitting Bodies](tests/test_resources/renders/EmittingBodiesExample_first_frame.jpg) | ![Draw Overlay](tests/test_resources/renders/DrawOverlayExample_first_frame.jpg) | ![Sky Image](tests/test_resources/renders/SkyImageBackgroundExample_first_frame.jpg) |
 
 ### Custom meshes & textures
 
@@ -186,8 +208,10 @@ During `drawFrame`, the renderer advances the engine by the frame delta, updates
 - `CMakeLists.txt` – Build configuration, dependency fetching, shader compilation, and the new `core` static library that aggregates the ECS, engine, and renderer layers.
 - `include/core/ecs/` – Header-only ECS registry (`Entity.hpp`, `Registry.hpp`) plus shared component definitions used by every gameplay system.
 - `include/VulkanCubeApp.hpp` – Vulkan renderer declaration that implements `vkengine::IRenderer` and now resides inside the core module.
+- `include/core/units/MetricUnits.hpp` – Metric units helper types (length, mass, time, temperature) with conversions.
 - `include/engine/*.hpp` – ECS-backed gameplay API (scene, objects, physics, particles, deformables, renderer abstractions).
 - `src/engine/*.cpp` – Implementation of the engine, transforms, and systems; all component reads/writes go through the ECS registry.
+- `src/core/units/MetricUnits.cpp` – Metric conversion utilities and derived unit helpers.
 - `examples/vulkan_cube/VulkanCubeApp.cpp` – Full Vulkan setup, render loop, and integration with the ECS-backed engine.
 - `examples/*/main.cpp` – Entry points for the cube, particle, deformable, and N-body demos—all link against the `core` module.
 - `shaders/` – GLSL vertex, fragment, and compute shaders compiled at build time (including `shadow.vert` for the depth-only pass).

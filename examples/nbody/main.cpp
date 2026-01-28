@@ -1,7 +1,7 @@
 #include "engine/GameEngine.hpp"
 #include "engine/HeadlessCapture.hpp"
-#include "NBodyGpuInterop.hpp"
-#include "VulkanRenderer.hpp"
+#include "examples/nbody/NBodyGpuInterop.hpp"
+#include "core/VulkanRenderer.hpp"
 
 #include <glm/glm.hpp>
 #include <glm/gtc/constants.hpp>
@@ -105,7 +105,7 @@ try {
     keyLightInfo.name = "CoreLight";
     keyLightInfo.position = glm::vec3{0.0f, 80.0f, 0.0f};
     keyLightInfo.color = glm::vec3{0.8f, 0.9f, 1.0f};
-    keyLightInfo.intensity = 10.0f;
+    keyLightInfo.intensity = 5.0f;
     auto& keyLight = scene.createLight(keyLightInfo);
 
     VulkanCubeApp renderer(engine);

@@ -9,6 +9,7 @@ struct alignas(16) ObjectPushConstants {
     glm::vec4 baseColor;
     glm::vec4 materialParams;
     glm::vec4 emissiveParams;
+    glm::vec4 mirrorParams;
 };
 
 } // namespace vkcore

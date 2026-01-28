@@ -1,6 +1,6 @@
 #include "engine/GameEngine.hpp"
 #include "engine/HeadlessCapture.hpp"
-#include "VulkanRenderer.hpp"
+#include "core/VulkanRenderer.hpp"
 
 #include <exception>
 #include <filesystem>

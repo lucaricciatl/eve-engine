@@ -27,9 +27,9 @@ layout(push_constant) uniform BillboardParams {
 } params;
 
 const uint VERTICES_PER_PARTICLE = 6u;
-const uint FLOATS_PER_VERTEX = 9u;
+const uint FLOATS_PER_VERTEX = 10u;
 
-void storeVertex(uint vertexIndex, vec3 position, vec2 uv, vec4 color)
+void storeVertex(uint vertexIndex, vec3 position, vec2 uv, vec4 color, float shape)
 {
     uint offset = vertexIndex * FLOATS_PER_VERTEX;
     vertexBuffer.vertexData[offset + 0u] = position.x;
@@ -41,6 +41,7 @@ void storeVertex(uint vertexIndex, vec3 position, vec2 uv, vec4 color)
     vertexBuffer.vertexData[offset + 6u] = color.y;
     vertexBuffer.vertexData[offset + 7u] = color.z;
     vertexBuffer.vertexData[offset + 8u] = color.w;
+    vertexBuffer.vertexData[offset + 9u] = shape;
 }
 
 void main()
@@ -67,10 +68,11 @@ void main()
     vec3 p3 = center - right - up;
 
     uint vertexBase = particleIndex * VERTICES_PER_PARTICLE;
-    storeVertex(vertexBase + 0u, p0, vec2(0.0f, 1.0f), color);
-    storeVertex(vertexBase + 1u, p2, vec2(1.0f, 0.0f), color);
-    storeVertex(vertexBase + 2u, p1, vec2(1.0f, 1.0f), color);
-    storeVertex(vertexBase + 3u, p0, vec2(0.0f, 1.0f), color);
-    storeVertex(vertexBase + 4u, p3, vec2(0.0f, 0.0f), color);
-    storeVertex(vertexBase + 5u, p2, vec2(1.0f, 0.0f), color);
+    const float shape = 0.0f;
+    storeVertex(vertexBase + 0u, p0, vec2(0.0f, 1.0f), color, shape);
+    storeVertex(vertexBase + 1u, p2, vec2(1.0f, 0.0f), color, shape);
+    storeVertex(vertexBase + 2u, p1, vec2(1.0f, 1.0f), color, shape);
+    storeVertex(vertexBase + 3u, p0, vec2(0.0f, 1.0f), color, shape);
+    storeVertex(vertexBase + 4u, p3, vec2(0.0f, 0.0f), color, shape);
+    storeVertex(vertexBase + 5u, p2, vec2(1.0f, 0.0f), color, shape);
 }

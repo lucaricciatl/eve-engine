@@ -1,4 +1,4 @@
-#include "VulkanRenderer.hpp"
+#include "core/VulkanRenderer.hpp"
 #include "engine/HeadlessCapture.hpp"
 #include "engine/GameEngine.hpp"
 #include "ui/Draw.hpp"
@@ -27,7 +27,7 @@ try {
     lightInfo.name = "Key";
     lightInfo.position = glm::vec3{5.0f, 6.0f, 5.0f};
     lightInfo.color = glm::vec3{1.0f, 0.95f, 0.85f};
-    lightInfo.intensity = 2.0f;
+    lightInfo.intensity = 1.0f;
     scene.createLight(lightInfo);
 
     VulkanCubeApp renderer(engine);

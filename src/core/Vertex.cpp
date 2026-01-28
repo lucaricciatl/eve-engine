@@ -49,9 +49,9 @@ VkVertexInputBindingDescription ParticleVertex::bindingDescription()
     return bindingDescription;
 }
 
-std::array<VkVertexInputAttributeDescription, 3> ParticleVertex::attributeDescriptions()
+std::array<VkVertexInputAttributeDescription, 4> ParticleVertex::attributeDescriptions()
 {
-    std::array<VkVertexInputAttributeDescription, 3> attributeDescriptions{};
+    std::array<VkVertexInputAttributeDescription, 4> attributeDescriptions{};
 
     attributeDescriptions[0].binding = 0;
     attributeDescriptions[0].location = 0;
@@ -67,6 +67,11 @@ std::array<VkVertexInputAttributeDescription, 3> ParticleVertex::attributeDescri
     attributeDescriptions[2].location = 2;
     attributeDescriptions[2].format = VK_FORMAT_R32G32B32A32_SFLOAT;
     attributeDescriptions[2].offset = offsetof(ParticleVertex, color);
+
+    attributeDescriptions[3].binding = 0;
+    attributeDescriptions[3].location = 3;
+    attributeDescriptions[3].format = VK_FORMAT_R32_SFLOAT;
+    attributeDescriptions[3].offset = offsetof(ParticleVertex, shape);
 
     return attributeDescriptions;
 }

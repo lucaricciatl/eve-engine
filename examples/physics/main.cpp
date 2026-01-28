@@ -1,6 +1,6 @@
 #include "engine/GameEngine.hpp"
 #include "engine/HeadlessCapture.hpp"
-#include "VulkanRenderer.hpp"
+#include "core/VulkanRenderer.hpp"
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -107,14 +107,14 @@ try {
     keyLightInfo.name = "KeyLight";
     keyLightInfo.position = glm::vec3{4.0f, 10.0f, 4.0f};
     keyLightInfo.color = glm::vec3{1.0f, 0.95f, 0.85f};
-    keyLightInfo.intensity = 8.0f;
+    keyLightInfo.intensity = 4.0f;
     scene.createLight(keyLightInfo);
 
     vkengine::LightCreateInfo fillLightInfo{};
     fillLightInfo.name = "FillLight";
     fillLightInfo.position = glm::vec3{-3.0f, 5.0f, 3.0f};
     fillLightInfo.color = glm::vec3{0.7f, 0.8f, 1.0f};
-    fillLightInfo.intensity = 3.0f;
+    fillLightInfo.intensity = 1.5f;
     scene.createLight(fillLightInfo);
 
     std::cout << "\nPhysics Configuration:\n";

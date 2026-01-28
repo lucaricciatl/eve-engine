@@ -1,6 +1,6 @@
 #include "engine/GameEngine.hpp"
 #include "engine/HeadlessCapture.hpp"
-#include "VulkanRenderer.hpp"
+#include "core/VulkanRenderer.hpp"
 
 #include <glm/gtc/matrix_transform.hpp>
 
@@ -51,7 +51,7 @@ try {
     rigLightInfo.name = "DeformableLight";
     rigLightInfo.position = glm::vec3{-6.0f, 10.0f, 4.5f};
     rigLightInfo.color = glm::vec3{1.0f, 0.97f, 0.92f};
-    rigLightInfo.intensity = 12.0f;
+    rigLightInfo.intensity = 6.0f;
     auto& light = scene.createLight(rigLightInfo);
 
     VulkanCubeApp renderer(engine);

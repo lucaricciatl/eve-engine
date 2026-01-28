@@ -1,6 +1,6 @@
 #include "engine/GameEngine.hpp"
 #include "engine/HeadlessCapture.hpp"
-#include "VulkanRenderer.hpp"
+#include "core/VulkanRenderer.hpp"
 
 #include <algorithm>
 #include <cstdlib>
@@ -104,14 +104,14 @@ try {
     keyLight.name = "KeyLight";
     keyLight.position = glm::vec3{4.0f, 6.0f, 4.0f};
     keyLight.color = glm::vec3{1.0f, 0.96f, 0.9f};
-    keyLight.intensity = 5.0f;
+    keyLight.intensity = 2.5f;
     scene.createLight(keyLight);
 
     vkengine::LightCreateInfo fillLight{};
     fillLight.name = "Fill";
     fillLight.position = glm::vec3{-6.0f, 3.0f, 1.0f};
     fillLight.color = glm::vec3{0.7f, 0.85f, 1.0f};
-    fillLight.intensity = 2.0f;
+    fillLight.intensity = 1.0f;
     scene.createLight(fillLight);
 
     std::cout << "\n=== Materials Example ===\n";

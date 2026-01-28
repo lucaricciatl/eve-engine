@@ -12,6 +12,8 @@
 namespace vkcore {
 namespace {
 
+static_assert(sizeof(vkcore::ObjectPushConstants) == 128, "ObjectPushConstants size mismatch");
+
 std::vector<char> readFile(const std::filesystem::path& filename)
 {
     std::ifstream file(filename, std::ios::ate | std::ios::binary);
@@ -188,6 +190,48 @@ CubePipelineOutputs createCubePipelines(const CubePipelineInputs& inputs)
         vkDestroyShaderModule(inputs.device, fragShaderModule, nullptr);
         vkDestroyShaderModule(inputs.device, vertShaderModule, nullptr);
         throw std::runtime_error("Failed to create graphics pipeline");
+    }
+
+    outputs.stylePipelines.fill(VK_NULL_HANDLE);
+    outputs.stylePipelines[0] = outputs.graphicsPipeline;
+
+    static constexpr std::array<const char*, kStylePipelineCount> kStyleFragFiles = {
+        "cube.frag.spv",
+        "toon.frag.spv",
+        "rim.frag.spv",
+        "heat.frag.spv",
+        "gradient.frag.spv",
+        "wireframe.frag.spv",
+        "glow.frag.spv"
+    };
+
+    for (size_t i = 1; i < kStylePipelineCount; ++i) {
+        auto styleCode = readFile(shaderDir / kStyleFragFiles[i]);
+        VkShaderModule styleFragModule = createShaderModule(inputs.device, styleCode);
+
+        VkPipelineShaderStageCreateInfo styleFragStage = fragShaderStageInfo;
+        styleFragStage.module = styleFragModule;
+        VkPipelineShaderStageCreateInfo styleStages[] = {vertShaderStageInfo, styleFragStage};
+
+        VkGraphicsPipelineCreateInfo stylePipelineInfo = pipelineInfo;
+        stylePipelineInfo.pStages = styleStages;
+
+        if (vkCreateGraphicsPipelines(inputs.device, VK_NULL_HANDLE, 1, &stylePipelineInfo, nullptr, &outputs.stylePipelines[i]) != VK_SUCCESS) {
+            vkDestroyShaderModule(inputs.device, styleFragModule, nullptr);
+            vkDestroyPipeline(inputs.device, outputs.graphicsPipeline, nullptr);
+            for (size_t j = 1; j < i; ++j) {
+                if (outputs.stylePipelines[j] != VK_NULL_HANDLE) {
+                    vkDestroyPipeline(inputs.device, outputs.stylePipelines[j], nullptr);
+                    outputs.stylePipelines[j] = VK_NULL_HANDLE;
+                }
+            }
+            vkDestroyPipelineLayout(inputs.device, outputs.pipelineLayout, nullptr);
+            vkDestroyShaderModule(inputs.device, fragShaderModule, nullptr);
+            vkDestroyShaderModule(inputs.device, vertShaderModule, nullptr);
+            throw std::runtime_error("Failed to create style graphics pipeline");
+        }
+
+        vkDestroyShaderModule(inputs.device, styleFragModule, nullptr);
     }
 
     VkPipelineInputAssemblyStateCreateInfo lineAssembly = inputAssembly;
@@ -370,6 +414,15 @@ void destroyCubePipelines(VkDevice device, CubePipelineOutputs& pipelines)
     if (pipelines.graphicsPipeline != VK_NULL_HANDLE) {
         vkDestroyPipeline(device, pipelines.graphicsPipeline, nullptr);
         pipelines.graphicsPipeline = VK_NULL_HANDLE;
+    }
+    for (size_t i = 1; i < pipelines.stylePipelines.size(); ++i) {
+        if (pipelines.stylePipelines[i] != VK_NULL_HANDLE) {
+            vkDestroyPipeline(device, pipelines.stylePipelines[i], nullptr);
+            pipelines.stylePipelines[i] = VK_NULL_HANDLE;
+        }
+    }
+    if (!pipelines.stylePipelines.empty()) {
+        pipelines.stylePipelines[0] = VK_NULL_HANDLE;
     }
     if (pipelines.linePipeline != VK_NULL_HANDLE) {
         vkDestroyPipeline(device, pipelines.linePipeline, nullptr);

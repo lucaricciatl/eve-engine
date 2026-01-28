@@ -12,9 +12,15 @@ layout(std140, set = 0, binding = 0) uniform CameraBuffer {
     mat4 view;
     mat4 proj;
     mat4 lightViewProj;
+    mat4 reflectionViewProj;
     vec4 cameraPosition;
-    vec4 lightPosition;
-    vec4 lightColorIntensity;
+    vec4 reflectionPlane;
+    vec4 lightPositions[4];
+    vec4 lightColors[4];
+    vec4 lightDirections[4];
+    vec4 lightSpotAngles[4];
+    vec4 lightAreaParams[4];
+    vec4 lightParams;
     vec4 shadingParams;
     vec4 fogColor;
     vec4 fogParams;
@@ -28,6 +34,7 @@ layout(push_constant) uniform ObjectPush {
     vec4 baseColor;
     vec4 materialParams;
     vec4 emissiveParams;
+    vec4 mirrorParams;
 } objectData;
 
 float rand2(vec2 co)
@@ -76,55 +83,127 @@ float computeShadow(vec3 normal, vec3 lightDir)
 
 void main() {
     vec3 N = normalize(fragNormal);
-    vec3 lightPos = cameraUBO.lightPosition.xyz;
-    bool directionalLight = cameraUBO.lightPosition.w > 0.5;
-    vec3 lightColor = cameraUBO.lightColorIntensity.rgb;
-    float lightIntensity = cameraUBO.lightColorIntensity.w;
     int debugMode = int(cameraUBO.shadingParams.x + 0.5);
     bool enableShadows = cameraUBO.shadingParams.y > 0.5;
     bool enableSpecular = cameraUBO.shadingParams.z > 0.5;
 
-    vec3 lightDir = normalize(lightPos - fragWorldPos);
-    float diff = max(dot(N, lightDir), 0.0);
-
-    float distanceToLight = length(lightPos - fragWorldPos);
-    float attenuation = directionalLight ? 1.0
-                                         : 1.0 / (1.0 + 0.09 * distanceToLight + 0.032 * distanceToLight * distanceToLight);
-
     vec3 viewDir = normalize(cameraUBO.cameraPosition.xyz - fragWorldPos);
-    vec3 halfVector = normalize(lightDir + viewDir);
 
     float metallic = clamp(objectData.materialParams.x, 0.0, 1.0);
     float roughness = clamp(objectData.materialParams.y, 0.02, 1.0);
     float specularStrength = clamp(objectData.materialParams.z, 0.0, 1.0);
     float opacity = clamp(objectData.materialParams.w, 0.0, 1.0);
     float shininess = mix(8.0, 128.0, 1.0 - roughness);
-    float spec = pow(max(dot(N, halfVector), 0.0), shininess);
-
     vec4 sampledAlbedo = texture(albedoTexture, fragUV);
     vec3 baseColor = fragColor.rgb * sampledAlbedo.rgb;
     float alpha = fragColor.a * sampledAlbedo.a * opacity;
 
-    vec3 diffuse = baseColor * diff * lightColor * lightIntensity;
+    int lightCount = int(cameraUBO.lightParams.x + 0.5);
+    lightCount = clamp(lightCount, 1, 4);
     vec3 specularColor = mix(vec3(1.0), baseColor, metallic) * specularStrength;
-    vec3 specular = enableSpecular ? lightColor * lightIntensity * specularColor * spec : vec3(0.0);
+    vec3 firstDiffuse = vec3(0.0);
+    vec3 firstSpecular = vec3(0.0);
+    vec3 firstLightColor = vec3(0.0);
+    float firstLightIntensity = 0.0;
+    vec3 firstLightDir = vec3(0.0, -1.0, 0.0);
+    float firstAttenuation = 1.0;
+    float firstDiff = 0.0;
+    float firstSpec = 0.0;
+    vec3 otherDiffuse = vec3(0.0);
+    vec3 otherSpecular = vec3(0.0);
+    vec3 fogScatter = vec3(0.0);
+
+    for (int i = 0; i < lightCount; ++i) {
+        vec3 lightPos = cameraUBO.lightPositions[i].xyz;
+        vec3 lightColor = cameraUBO.lightColors[i].rgb;
+        float lightIntensity = cameraUBO.lightColors[i].w;
+        int lightType = int(cameraUBO.lightDirections[i].w + 0.5);
+        vec3 lightForward = normalize(cameraUBO.lightDirections[i].xyz);
+        vec3 lightDir = normalize(lightPos - fragWorldPos);
+        float diff = max(dot(N, lightDir), 0.0);
+        float distanceToLight = length(lightPos - fragWorldPos);
+        float attenuation = 1.0 / (1.0 + 0.09 * distanceToLight + 0.032 * distanceToLight * distanceToLight);
+        float range = max(cameraUBO.lightSpotAngles[i].z, 0.0);
+        if (range > 0.0) {
+            attenuation *= clamp(1.0 - (distanceToLight / range), 0.0, 1.0);
+        }
+
+        if (lightType == 1) {
+            float innerCos = cameraUBO.lightSpotAngles[i].x;
+            float outerCos = cameraUBO.lightSpotAngles[i].y;
+            float cosTheta = dot(-lightDir, lightForward);
+            float spotFactor = clamp((cosTheta - outerCos) / max(innerCos - outerCos, 0.0001), 0.0, 1.0);
+            attenuation *= spotFactor;
+        } else if (lightType == 2) {
+            float halfWidth = cameraUBO.lightAreaParams[i].x;
+            float halfHeight = cameraUBO.lightAreaParams[i].y;
+            float areaRadius = max(0.001, length(vec2(halfWidth, halfHeight)));
+            float areaFalloff = areaRadius / (areaRadius + distanceToLight);
+            float facing = max(dot(lightForward, -lightDir), 0.0);
+            attenuation *= areaFalloff * facing;
+        }
+        vec3 halfVector = normalize(lightDir + viewDir);
+        float spec = pow(max(dot(N, halfVector), 0.0), shininess);
+
+        vec3 diffuse = baseColor * diff * lightColor * lightIntensity;
+        vec3 specular = enableSpecular ? lightColor * lightIntensity * specularColor * spec : vec3(0.0);
+
+        if (i == 0) {
+            firstDiffuse = diffuse;
+            firstSpecular = specular;
+            firstLightColor = lightColor;
+            firstLightIntensity = lightIntensity;
+            firstLightDir = lightDir;
+            firstAttenuation = attenuation;
+            firstDiff = diff;
+            firstSpec = spec;
+        } else {
+            otherDiffuse += diffuse * attenuation;
+            otherSpecular += specular * attenuation;
+        }
+
+        float cosTheta = dot(viewDir, lightDir);
+        float phase = 0.75 * (1.0 + cosTheta * cosTheta);
+        fogScatter += lightColor * lightIntensity * 0.08 * phase * attenuation;
+    }
+
     vec3 ambient = baseColor * 0.1;
     vec3 emissive = objectData.emissiveParams.rgb * objectData.emissiveParams.w;
-    float shadow = enableShadows ? computeShadow(N, lightDir) : 0.0;
+    float shadow = enableShadows ? computeShadow(N, firstLightDir) : 0.0;
     float visibility = enableShadows ? (1.0 - shadow) : 1.0;
-    vec3 color = ambient + (diffuse + specular) * attenuation * visibility + emissive;
+    vec3 color = ambient + (firstDiffuse + firstSpecular) * firstAttenuation * visibility + otherDiffuse + otherSpecular + emissive;
     float fogAmount = 0.0;
+    bool isMirror = objectData.mirrorParams.x > 0.5;
 
     bool isGlass = alpha < 0.98;
-    if (isGlass) {
+    if (isGlass && !isMirror) {
         float ndotv = max(dot(N, viewDir), 0.0);
         float fresnel = pow(1.0 - ndotv, 5.0);
         float glassVisibility = mix(1.0, visibility, 0.45);
-        vec3 glassDiffuse = baseColor * 0.08 * diff;
-        vec3 glassSpec = lightColor * lightIntensity * (spec * 2.0 + fresnel * 1.4);
-        vec3 glassAmbient = baseColor * 0.02;
-        color = glassAmbient + (glassDiffuse + glassSpec) * attenuation * glassVisibility;
-        alpha = clamp(alpha + fresnel * 0.4, 0.05, 0.9);
+        vec3 glassTint = mix(vec3(1.0), baseColor, 0.65);
+        vec3 glassDiffuse = baseColor * 0.12 * firstDiff;
+        vec3 glassSpec = firstLightColor * firstLightIntensity * glassTint * (firstSpec * 1.2 + fresnel * 0.9) * specularStrength;
+        vec3 glassAmbient = baseColor * 0.03;
+        color = glassAmbient + (glassDiffuse + glassSpec) * firstAttenuation * glassVisibility;
+        alpha = clamp(alpha + fresnel * 0.35, 0.08, 0.85);
+    }
+
+    if (isMirror) {
+        vec3 planeNormal = cameraUBO.reflectionPlane.xyz;
+        float planeLen = length(planeNormal);
+        if (planeLen > 1e-4) {
+            planeNormal /= planeLen;
+            float planeD = cameraUBO.reflectionPlane.w;
+            float distanceToPlane = dot(planeNormal, fragWorldPos) + planeD;
+            vec3 reflectedPos = fragWorldPos - 2.0 * distanceToPlane * planeNormal;
+            vec4 proj = cameraUBO.reflectionViewProj * vec4(reflectedPos, 1.0);
+            vec3 ndc = proj.xyz / max(proj.w, 0.0001);
+            vec2 reflectionUV = ndc.xy * 0.5 + 0.5;
+            reflectionUV = clamp(reflectionUV, vec2(0.0), vec2(1.0));
+            vec3 reflectedColor = texture(albedoTexture, reflectionUV).rgb;
+            color = mix(reflectedColor, baseColor, 0.08);
+            alpha = 1.0;
+        }
     }
 
     if (cameraUBO.fogColor.a > 0.5) {
@@ -151,10 +230,6 @@ void main() {
     }
 
     if (cameraUBO.fogColor.a > 0.5 && debugMode != 4) {
-        vec3 lightDirNormalized = normalize(lightPos - fragWorldPos);
-        float cosTheta = dot(viewDir, lightDirNormalized);
-        float phase = 0.75 * (1.0 + cosTheta * cosTheta);
-        vec3 fogScatter = lightColor * lightIntensity * 0.08 * phase;
         vec3 fogTint = cameraUBO.fogColor.rgb + fogScatter;
         color = mix(color, fogTint, fogAmount);
     }

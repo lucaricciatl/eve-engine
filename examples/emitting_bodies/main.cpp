@@ -1,7 +1,7 @@
 #include "engine/GameEngine.hpp"
 #include "engine/HeadlessCapture.hpp"
 #include "core/ecs/Components.hpp"
-#include "VulkanRenderer.hpp"
+#include "core/VulkanRenderer.hpp"
 
 #include <GLFW/glfw3.h>
 
@@ -88,6 +88,7 @@ public:
 
         if (emitter.light != nullptr) {
             emitter.light->setPosition(transform.position + glm::vec3(0.0f, lightOffset, 0.0f));
+            emitter.light->setColor(emitter.object->render().emissive);
         }
     }
 
@@ -195,7 +196,9 @@ std::shared_ptr<std::vector<EmitterHandle>> buildScene(EmittingBodiesEngine& eng
     auto& plane = engine.createObject("EmitterPlane", vkengine::MeshType::Cube);
     plane.transform().scale = glm::vec3{14.0f, 0.2f, 14.0f};
     plane.transform().position = glm::vec3{0.0f, -1.2f, 0.0f};
-    plane.setBaseColor(glm::vec3{0.08f, 0.08f, 0.08f});
+    plane.setBaseColor(glm::vec3{0.18f, 0.18f, 0.2f});
+    plane.render().roughness = 0.9f;
+    plane.render().specular = 0.1f;
     plane.enableCollider(glm::vec3{7.0f, 0.1f, 7.0f}, true);
 
     const std::array<glm::vec3, 3> colors = {
@@ -210,17 +213,26 @@ std::shared_ptr<std::vector<EmitterHandle>> buildScene(EmittingBodiesEngine& eng
     };
 
     for (std::size_t i = 0; i < colors.size(); ++i) {
+        const glm::vec3 emitterColor = colors[i];
         auto& emitterObject = engine.createObject("Emitter" + std::to_string(i), vkengine::MeshType::Cube);
         emitterObject.setMeshResource("assets/models/emitter_sphere.stl");
         emitterObject.transform().position = positions[i];
         emitterObject.transform().scale = glm::vec3{1.2f};
-        emitterObject.setBaseColor(colors[i]);
+        emitterObject.setBaseColor(emitterColor);
+        emitterObject.setAlbedoTexture("__default__");
+        emitterObject.render().metallic = 0.0f;
+        emitterObject.render().roughness = 0.6f;
+        emitterObject.render().specular = 0.1f;
+        emitterObject.render().emissive = glm::vec3{0.0f};
+        emitterObject.render().emissiveIntensity = 0.0f;
 
         vkengine::LightCreateInfo info{};
         info.name = "EmitterLight" + std::to_string(i);
         info.position = positions[i] + glm::vec3{0.0f, 0.5f, 0.0f};
-        info.color = colors[i];
-        info.intensity = 4.5f;
+        info.color = emitterColor;
+        info.type = vkengine::LightType::Point;
+        info.intensity = 0.2f;
+        info.range = 12.0f;
         auto& light = scene.createLight(info);
 
         emitters->push_back(EmitterHandle{&emitterObject, &light});

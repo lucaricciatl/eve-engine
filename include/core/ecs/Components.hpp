@@ -30,6 +30,12 @@ enum class MeshType {
     CustomMesh,
 };
 
+enum class LightType {
+    Point = 0,
+    Spot = 1,
+    Area = 2,
+};
+
 struct Transform {
     glm::vec3 position{0.0f};
     glm::vec3 rotation{0.0f};
@@ -110,6 +116,13 @@ struct LightComponent {
     glm::vec3 position{0.0f, 3.0f, 0.0f};
     glm::vec3 color{1.0f};
     float intensity{1.0f};
+    LightType type{LightType::Point};
+    glm::vec3 direction{0.0f, -1.0f, 0.0f};
+    float range{18.0f};
+    float innerConeAngle{0.261799f};
+    float outerConeAngle{0.523599f};
+    glm::vec2 areaSize{1.2f, 1.2f};
+    glm::vec3 up{0.0f, 1.0f, 0.0f};
     bool enabled{true};
 };
 

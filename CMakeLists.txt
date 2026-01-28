@@ -44,6 +44,14 @@ if(NOT imgui_POPULATED)
     FetchContent_Populate(imgui)
 endif()
 
+FetchContent_Declare(
+    lunasvg
+    GIT_REPOSITORY https://github.com/sammycage/lunasvg.git
+    GIT_TAG v2.3.9
+)
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+FetchContent_MakeAvailable(lunasvg)
+
 find_program(GLSLC_EXECUTABLE NAMES glslc HINTS "$ENV{VULKAN_SDK}/Bin" "$ENV{VULKAN_SDK}/bin")
 if(NOT GLSLC_EXECUTABLE)
     message(FATAL_ERROR "Unable to locate glslc. Please ensure that the Vulkan SDK is installed and glslc is on PATH or set VULKAN_SDK.")
@@ -71,6 +79,12 @@ add_subdirectory(${VULKAN_LOADER_ROOT} ${CMAKE_BINARY_DIR}/external/Vulkan-Loade
 set(SHADER_SOURCES
     ${CMAKE_SOURCE_DIR}/shaders/cube.vert
     ${CMAKE_SOURCE_DIR}/shaders/cube.frag
+    ${CMAKE_SOURCE_DIR}/shaders/toon.frag
+    ${CMAKE_SOURCE_DIR}/shaders/rim.frag
+    ${CMAKE_SOURCE_DIR}/shaders/heat.frag
+    ${CMAKE_SOURCE_DIR}/shaders/gradient.frag
+    ${CMAKE_SOURCE_DIR}/shaders/wireframe.frag
+    ${CMAKE_SOURCE_DIR}/shaders/glow.frag
     ${CMAKE_SOURCE_DIR}/shaders/shadow.vert
     ${CMAKE_SOURCE_DIR}/shaders/particle.vert
     ${CMAKE_SOURCE_DIR}/shaders/particle.frag
@@ -99,6 +113,7 @@ set(IMGUI_SOURCES
     ${imgui_SOURCE_DIR}/imgui_tables.cpp
     ${imgui_SOURCE_DIR}/imgui_widgets.cpp
     ${imgui_SOURCE_DIR}/imgui_demo.cpp
+    ${imgui_SOURCE_DIR}/misc/cpp/imgui_stdlib.cpp
     ${imgui_SOURCE_DIR}/backends/imgui_impl_glfw.cpp
     ${imgui_SOURCE_DIR}/backends/imgui_impl_vulkan.cpp
 )
@@ -130,6 +145,7 @@ set(CORE_ENGINE_SOURCES
     src/engine/assets/ImageWriter.cpp
     src/engine/assets/TextureLoader.cpp
     src/engine/assets/StbImage.cpp
+    src/core/units/MetricUnits.cpp
     src/core/primitives/PrimitiveGenerator.cpp
     src/core/Vertex.cpp
     src/core/PipelineLibrary.cpp
@@ -154,6 +170,7 @@ add_library(core STATIC ${CORE_ENGINE_SOURCES} ${CORE_RENDERER_SOURCES})
 target_include_directories(core
     PUBLIC
         ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}
         ${glm_SOURCE_DIR}
         ${glfw_SOURCE_DIR}/include
         ${PROJECT_SOURCE_DIR}/external/stb
@@ -179,12 +196,18 @@ target_link_libraries(core
         Vulkan::Loader
         imgui
 )
+if(TARGET lunasvg)
+    target_link_libraries(core PRIVATE lunasvg)
+endif()
 
 if(WIN32)
     target_link_libraries(core PRIVATE windowscodecs)
 endif()
 
 add_dependencies(core Shaders)
+
+set_property(TARGET core PROPERTY FOLDER "core")
+set_property(TARGET Shaders PROPERTY FOLDER "core")
 
 if(MSVC)
     target_compile_options(core PRIVATE /W4 /permissive-)
@@ -200,6 +223,9 @@ target_link_libraries(ParticleExample PRIVATE core)
 
 add_executable(MaterialsExample examples/materials/main.cpp)
 target_link_libraries(MaterialsExample PRIVATE core)
+
+add_executable(DustCubeExample examples/dust_cube/main.cpp)
+target_link_libraries(DustCubeExample PRIVATE core)
 
 add_executable(DeformableExample examples/deformable/main.cpp)
 target_link_libraries(DeformableExample PRIVATE core)
@@ -237,6 +263,43 @@ target_link_libraries(SkyImageBackgroundExample PRIVATE core)
 add_executable(VolumetricFogExample examples/volumetric_fog/main.cpp)
 target_link_libraries(VolumetricFogExample PRIVATE core)
 
+add_executable(ShaderStylesExample examples/shader_styles/main.cpp)
+target_link_libraries(ShaderStylesExample PRIVATE core)
+
+add_executable(TerminalAppExample examples/terminal_app/main.cpp)
+
+add_executable(InAppConsoleExample examples/in_app_console/main.cpp)
+target_link_libraries(InAppConsoleExample PRIVATE core)
+
+add_executable(ReflectionsExample examples/reflections/main.cpp)
+target_link_libraries(ReflectionsExample PRIVATE core)
+
+set(EXAMPLE_TARGETS
+    CubeExample
+    ParticleExample
+    MaterialsExample
+    DustCubeExample
+    DeformableExample
+    NBodyExample
+    MolecularDynamicsExample
+    LightsExample
+    GlassExample
+    PhysicsExample
+    EmittingBodiesExample
+    LatticeExample
+    DrawOverlayExample
+    WindowFeaturesExample
+    SkyImageBackgroundExample
+    VolumetricFogExample
+    ShaderStylesExample
+    TerminalAppExample
+    InAppConsoleExample
+    ReflectionsExample
+)
+foreach(example_target IN LISTS EXAMPLE_TARGETS)
+    set_property(TARGET ${example_target} PROPERTY FOLDER "examples")
+endforeach()
+
 # Copy assets next to the executable so runtime asset lookup succeeds when launched from the build tree
 add_custom_command(TARGET SkyImageBackgroundExample POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:SkyImageBackgroundExample>/assets"
@@ -246,6 +309,8 @@ add_custom_command(TARGET SkyImageBackgroundExample POST_BUILD
 if(MSVC)
     target_compile_options(CubeExample PRIVATE /W4 /permissive-)
     target_compile_options(ParticleExample PRIVATE /W4 /permissive-)
+    target_compile_options(MaterialsExample PRIVATE /W4 /permissive-)
+    target_compile_options(DustCubeExample PRIVATE /W4 /permissive-)
     target_compile_options(DeformableExample PRIVATE /W4 /permissive-)
     target_compile_options(NBodyExample PRIVATE /W4 /permissive-)
     target_compile_options(MolecularDynamicsExample PRIVATE /W4 /permissive-)
@@ -258,9 +323,15 @@ if(MSVC)
     target_compile_options(WindowFeaturesExample PRIVATE /W4 /permissive-)
     target_compile_options(SkyImageBackgroundExample PRIVATE /W4 /permissive-)
     target_compile_options(VolumetricFogExample PRIVATE /W4 /permissive-)
+    target_compile_options(ShaderStylesExample PRIVATE /W4 /permissive-)
+    target_compile_options(TerminalAppExample PRIVATE /W4 /permissive-)
+    target_compile_options(InAppConsoleExample PRIVATE /W4 /permissive-)
+    target_compile_options(ReflectionsExample PRIVATE /W4 /permissive-)
 else()
     target_compile_options(CubeExample PRIVATE -Wall -Wextra -pedantic)
     target_compile_options(ParticleExample PRIVATE -Wall -Wextra -pedantic)
+    target_compile_options(MaterialsExample PRIVATE -Wall -Wextra -pedantic)
+    target_compile_options(DustCubeExample PRIVATE -Wall -Wextra -pedantic)
     target_compile_options(DeformableExample PRIVATE -Wall -Wextra -pedantic)
     target_compile_options(NBodyExample PRIVATE -Wall -Wextra -pedantic)
     target_compile_options(MolecularDynamicsExample PRIVATE -Wall -Wextra -pedantic)
@@ -273,6 +344,10 @@ else()
     target_compile_options(WindowFeaturesExample PRIVATE -Wall -Wextra -pedantic)
     target_compile_options(SkyImageBackgroundExample PRIVATE -Wall -Wextra -pedantic)
     target_compile_options(VolumetricFogExample PRIVATE -Wall -Wextra -pedantic)
+    target_compile_options(ShaderStylesExample PRIVATE -Wall -Wextra -pedantic)
+    target_compile_options(TerminalAppExample PRIVATE -Wall -Wextra -pedantic)
+    target_compile_options(InAppConsoleExample PRIVATE -Wall -Wextra -pedantic)
+    target_compile_options(ReflectionsExample PRIVATE -Wall -Wextra -pedantic)
 endif()
 
 set_source_files_properties(${SHADER_SOURCES} PROPERTIES HEADER_FILE_ONLY TRUE)
@@ -289,3 +364,77 @@ FetchContent_MakeAvailable(googletest)
 
 enable_testing()
 add_subdirectory(tests)
+
+# Organize external libraries into a solution folder for MSVS
+set(EXTERNAL_TARGETS
+    glfw
+    imgui
+    lunasvg
+    gtest
+    gtest_main
+    gmock
+    gmock_main
+    vulkan
+    asm_offset
+    asm-offset
+    asm_offset_gen
+)
+foreach(external_target IN LISTS EXTERNAL_TARGETS)
+    if(TARGET ${external_target})
+        get_target_property(target_alias ${external_target} ALIASED_TARGET)
+        if(NOT target_alias)
+            set_property(TARGET ${external_target} PROPERTY FOLDER "external")
+        endif()
+    endif()
+endforeach()
+
+# Additional MSVS folder organization
+if(TARGET glfw)
+    set_property(TARGET glfw PROPERTY FOLDER "external/GLFW3")
+endif()
+
+if(DEFINED glfw_SOURCE_DIR)
+    get_property(glfw_targets DIRECTORY ${glfw_SOURCE_DIR} PROPERTY BUILDSYSTEM_TARGETS)
+    foreach(glfw_target IN LISTS glfw_targets)
+        if(TARGET ${glfw_target})
+            get_target_property(glfw_alias ${glfw_target} ALIASED_TARGET)
+            if(NOT glfw_alias)
+                set_property(TARGET ${glfw_target} PROPERTY FOLDER "external/GLFW3")
+            endif()
+        endif()
+    endforeach()
+endif()
+
+if(TARGET update_mappings)
+    set_property(TARGET update_mappings PROPERTY FOLDER "external/GLFW3")
+endif()
+
+# Group Vulkan loader and asm-offset generator targets under external
+if(DEFINED VULKAN_LOADER_ROOT)
+    get_property(loader_targets DIRECTORY ${VULKAN_LOADER_ROOT} PROPERTY BUILDSYSTEM_TARGETS)
+    foreach(loader_target IN LISTS loader_targets)
+        if(TARGET ${loader_target})
+            get_target_property(loader_alias ${loader_target} ALIASED_TARGET)
+            if(NOT loader_alias)
+                set_property(TARGET ${loader_target} PROPERTY FOLDER "external")
+            endif()
+        endif()
+    endforeach()
+endif()
+
+if(TARGET loader_asm_gen_files)
+    set_property(TARGET loader_asm_gen_files PROPERTY FOLDER "external")
+endif()
+
+set(HELPER_TARGETS
+    ALL_BUILD
+    ZERO_CHECK
+    INSTALL
+    RUN_TESTS
+    PACKAGE
+)
+foreach(helper_target IN LISTS HELPER_TARGETS)
+    if(TARGET ${helper_target})
+        set_property(TARGET ${helper_target} PROPERTY FOLDER "external/Helper Targets")
+    endif()
+endforeach()

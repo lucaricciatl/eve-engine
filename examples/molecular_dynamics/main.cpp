@@ -1,7 +1,7 @@
 #include "engine/GameEngine.hpp"
 #include "engine/MolecularDynamics.hpp"
 #include "engine/HeadlessCapture.hpp"
-#include "VulkanRenderer.hpp"
+#include "core/VulkanRenderer.hpp"
 
 #include <imgui.h>
 
@@ -390,21 +390,21 @@ try {
     keyLight.name = "KeyLight";
     keyLight.position = glm::vec3{10.0f, 14.0f, 10.0f};
     keyLight.color = glm::vec3{1.0f, 0.96f, 0.92f};
-    keyLight.intensity = 12.0f;
+    keyLight.intensity = 6.0f;
     scene.createLight(keyLight);
 
     vkengine::LightCreateInfo fillLight{};
     fillLight.name = "FillLight";
     fillLight.position = glm::vec3{-12.0f, 6.0f, 4.0f};
     fillLight.color = glm::vec3{0.5f, 0.6f, 1.0f};
-    fillLight.intensity = 5.0f;
+    fillLight.intensity = 2.5f;
     scene.createLight(fillLight);
 
     vkengine::LightCreateInfo rimLight{};
     rimLight.name = "RimLight";
     rimLight.position = glm::vec3{0.0f, 8.0f, -12.0f};
     rimLight.color = glm::vec3{0.9f, 0.95f, 1.0f};
-    rimLight.intensity = 4.0f;
+    rimLight.intensity = 2.0f;
     scene.createLight(rimLight);
 
     std::cout << "Molecular dynamics example: configurable Lennard-Jones atoms." << '\n';

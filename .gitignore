@@ -39,3 +39,7 @@
 
 # debug information files
 *.dwo
+
+# paths
+./build/*
+./tests/test_results/renders/*

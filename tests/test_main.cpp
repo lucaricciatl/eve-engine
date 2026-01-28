@@ -154,6 +154,7 @@ TEST(RendererTests, HeadlessCaptureAllExamples)
         "EmittingBodiesExample",
         "LatticeExample",
         "LightsExample",
+        "ReflectionsExample",
         "MolecularDynamicsExample",
         "NBodyExample",
         "ParticleExample",
@@ -162,7 +163,7 @@ TEST(RendererTests, HeadlessCaptureAllExamples)
         "WindowFeaturesExample"
     };
 
-    const auto outputDir = root / "tests" / "test_results" / "examples";
+    const auto outputDir = root / "tests" / "test_results" / "renders";
     std::filesystem::create_directories(outputDir);
 
     for (const auto& name : examples) {

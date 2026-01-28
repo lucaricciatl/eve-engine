@@ -27,6 +27,7 @@
 #include <vector>
 
 #include <imgui.h>
+#include <misc/cpp/imgui_stdlib.h>
 
 #ifndef SHADER_BINARY_DIR
 #define SHADER_BINARY_DIR ""
@@ -165,7 +166,7 @@ const std::vector<Vertex> LINE_VERTICES = {
 constexpr uint32_t N_BODY_WORKGROUP_SIZE = 256;
 constexpr uint32_t BILLBOARD_WORKGROUP_SIZE = 256;
 constexpr uint32_t VERTICES_PER_PARTICLE = 6;
-constexpr uint32_t PARTICLE_VERTEX_FLOATS = 9;
+constexpr uint32_t PARTICLE_VERTEX_FLOATS = 10;
 
 struct alignas(16) NBodyComputePushConstants {
     float deltaTime;
@@ -325,6 +326,44 @@ bool VulkanCubeApp::renderSingleFrameToJpeg(const std::filesystem::path& outputP
     return captureCompleted && !captureFailed;
 }
 
+bool VulkanCubeApp::renderFrameToJpegAt(const std::filesystem::path& outputPath, uint32_t targetFrame, float fixedDeltaSeconds)
+{
+    if (engine == nullptr) {
+        throw std::runtime_error("Renderer has no engine attached");
+    }
+
+    const uint32_t frameToCapture = std::max(1u, targetFrame);
+    const float frameDeltaSeconds = fixedDeltaSeconds > 0.0f ? fixedDeltaSeconds : (1.0f / 30.0f);
+
+    capturePath = outputPath;
+    captureRequested = false;
+    captureCompleted = false;
+    captureFailed = false;
+    exitRequested.store(false);
+
+    initWindow();
+    initVulkan();
+    ensureCaptureBuffer(swapChainExtent.width, swapChainExtent.height);
+
+    const std::chrono::steady_clock::duration frameStep =
+        std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<float>(frameDeltaSeconds));
+    for (uint32_t frame = 1; frame <= frameToCapture && !captureFailed; ++frame) {
+        if (frame == frameToCapture) {
+            captureRequested = true;
+        }
+        lastFrameTime = std::chrono::steady_clock::now() - frameStep;
+        drawFrame();
+        if (captureCompleted) {
+            break;
+        }
+    }
+
+    vkDeviceWaitIdle(device);
+    cleanup();
+
+    return captureCompleted && !captureFailed;
+}
+
 void VulkanCubeApp::initWindow()
 {
     if (windowConfig.width == 0) {
@@ -354,6 +393,7 @@ void VulkanCubeApp::initVulkan()
     createImageViews();
     createRenderPass();
     createShadowRenderPass();
+    createReflectionRenderPass();
     createDescriptorSetLayout();
     createMaterialDescriptorPool();
     createPipelines();
@@ -362,6 +402,7 @@ void VulkanCubeApp::initVulkan()
     createFramebuffers();
     createCommandPool();
     createMaterialResources();
+    createReflectionResources();
     createVertexBuffer();
     createLineVertexBuffer();
     createIndexBuffer();
@@ -494,9 +535,11 @@ void VulkanCubeApp::recreateSwapChain()
     createImageViews();
     createRenderPass();
     createShadowRenderPass();
+    createReflectionRenderPass();
     createPipelines();
     createDepthResources();
     createShadowResources();
+    createReflectionResources();
     createFramebuffers();
     createUniformBuffers();
     createDescriptorPool();
@@ -514,6 +557,7 @@ void VulkanCubeApp::cleanupSwapChain()
     }
     destroyRenderFinishedSemaphores();
     destroyCaptureResources();
+    destroyReflectionResources();
 
     uiLayer.onSwapchainDestroyed();
     skyTextureId = VK_NULL_HANDLE;
@@ -557,22 +601,36 @@ void VulkanCubeApp::cleanupSwapChain()
         }
         vkDestroyBuffer(device, uniformBuffers[i], nullptr);
         vkFreeMemory(device, uniformBuffersMemory[i], nullptr);
+
+        if (reflectionUniformBuffersMapped.size() > i && reflectionUniformBuffersMapped[i] != nullptr) {
+            vkUnmapMemory(device, reflectionUniformBuffersMemory[i]);
+            reflectionUniformBuffersMapped[i] = nullptr;
+        }
+        vkDestroyBuffer(device, reflectionUniformBuffers[i], nullptr);
+        vkFreeMemory(device, reflectionUniformBuffersMemory[i], nullptr);
     }
 
     uniformBuffers.clear();
     uniformBuffersMemory.clear();
     uniformBuffersMapped.clear();
+    reflectionUniformBuffers.clear();
+    reflectionUniformBuffersMemory.clear();
+    reflectionUniformBuffersMapped.clear();
 
     if (descriptorPool != VK_NULL_HANDLE) {
         vkDestroyDescriptorPool(device, descriptorPool, nullptr);
         descriptorPool = VK_NULL_HANDLE;
     }
     descriptorSets.clear();
+    reflectionDescriptorSets.clear();
 
-    if (graphicsPipeline != VK_NULL_HANDLE) {
-        vkDestroyPipeline(device, graphicsPipeline, nullptr);
-        graphicsPipeline = VK_NULL_HANDLE;
+    for (auto& pipeline : stylePipelines) {
+        if (pipeline != VK_NULL_HANDLE) {
+            vkDestroyPipeline(device, pipeline, nullptr);
+            pipeline = VK_NULL_HANDLE;
+        }
     }
+    graphicsPipeline = VK_NULL_HANDLE;
     if (linePipeline != VK_NULL_HANDLE) {
         vkDestroyPipeline(device, linePipeline, nullptr);
         linePipeline = VK_NULL_HANDLE;
@@ -596,6 +654,10 @@ void VulkanCubeApp::cleanupSwapChain()
     if (shadowRenderPass != VK_NULL_HANDLE) {
         vkDestroyRenderPass(device, shadowRenderPass, nullptr);
         shadowRenderPass = VK_NULL_HANDLE;
+    }
+    if (reflectionRenderPass != VK_NULL_HANDLE) {
+        vkDestroyRenderPass(device, reflectionRenderPass, nullptr);
+        reflectionRenderPass = VK_NULL_HANDLE;
     }
 }
 
@@ -904,6 +966,149 @@ void VulkanCubeApp::createShadowRenderPass()
     }
 }
 
+void VulkanCubeApp::createReflectionRenderPass()
+{
+    VkAttachmentDescription colorAttachment{};
+    colorAttachment.format = swapChainImageFormat;
+    colorAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
+    colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    colorAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    colorAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    colorAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    colorAttachment.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    VkAttachmentReference colorAttachmentRef{};
+    colorAttachmentRef.attachment = 0;
+    colorAttachmentRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+    VkAttachmentDescription depthAttachment{};
+    depthAttachment.format = findDepthFormat();
+    depthAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
+    depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    depthAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    depthAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    depthAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    depthAttachment.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+    VkAttachmentReference depthAttachmentRef{};
+    depthAttachmentRef.attachment = 1;
+    depthAttachmentRef.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+    VkSubpassDescription subpass{};
+    subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    subpass.colorAttachmentCount = 1;
+    subpass.pColorAttachments = &colorAttachmentRef;
+    subpass.pDepthStencilAttachment = &depthAttachmentRef;
+
+    VkSubpassDependency dependency{};
+    dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
+    dependency.dstSubpass = 0;
+    dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dependency.srcAccessMask = 0;
+    dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+
+    std::array<VkAttachmentDescription, 2> attachments = {colorAttachment, depthAttachment};
+
+    VkRenderPassCreateInfo renderPassInfo{};
+    renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+    renderPassInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
+    renderPassInfo.pAttachments = attachments.data();
+    renderPassInfo.subpassCount = 1;
+    renderPassInfo.pSubpasses = &subpass;
+    renderPassInfo.dependencyCount = 1;
+    renderPassInfo.pDependencies = &dependency;
+
+    if (vkCreateRenderPass(device, &renderPassInfo, nullptr, &reflectionRenderPass) != VK_SUCCESS) {
+        throw std::runtime_error("Failed to create reflection render pass");
+    }
+}
+
+void VulkanCubeApp::createReflectionResources()
+{
+    destroyReflectionResources();
+
+    VkFormat depthFormat = findDepthFormat();
+    createImage(swapChainExtent.width, swapChainExtent.height, swapChainImageFormat,
+                VK_IMAGE_TILING_OPTIMAL,
+                VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                reflectionColorImage, reflectionColorMemory);
+    reflectionColorView = createImageView(reflectionColorImage, swapChainImageFormat, VK_IMAGE_ASPECT_COLOR_BIT);
+
+    createImage(swapChainExtent.width, swapChainExtent.height, depthFormat,
+                VK_IMAGE_TILING_OPTIMAL,
+                VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                reflectionDepthImage, reflectionDepthMemory);
+    reflectionDepthView = createImageView(reflectionDepthImage, depthFormat, VK_IMAGE_ASPECT_DEPTH_BIT);
+
+    std::array<VkImageView, 2> attachments = {reflectionColorView, reflectionDepthView};
+    VkFramebufferCreateInfo framebufferInfo{};
+    framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+    framebufferInfo.renderPass = reflectionRenderPass;
+    framebufferInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
+    framebufferInfo.pAttachments = attachments.data();
+    framebufferInfo.width = swapChainExtent.width;
+    framebufferInfo.height = swapChainExtent.height;
+    framebufferInfo.layers = 1;
+
+    if (vkCreateFramebuffer(device, &framebufferInfo, nullptr, &reflectionFramebuffer) != VK_SUCCESS) {
+        throw std::runtime_error("Failed to create reflection framebuffer");
+    }
+
+    reflectionTexture.image = reflectionColorImage;
+    reflectionTexture.memory = reflectionColorMemory;
+    reflectionTexture.view = reflectionColorView;
+    reflectionTexture.width = swapChainExtent.width;
+    reflectionTexture.height = swapChainExtent.height;
+    if (reflectionTexture.descriptorSet == VK_NULL_HANDLE) {
+        reflectionTexture.descriptorSet = allocateMaterialDescriptor();
+    }
+    writeMaterialDescriptor(reflectionTexture.descriptorSet, reflectionTexture.view);
+    reflectionImageReady = false;
+}
+
+void VulkanCubeApp::destroyReflectionResources()
+{
+    if (reflectionFramebuffer != VK_NULL_HANDLE) {
+        vkDestroyFramebuffer(device, reflectionFramebuffer, nullptr);
+        reflectionFramebuffer = VK_NULL_HANDLE;
+    }
+    if (reflectionColorView != VK_NULL_HANDLE) {
+        vkDestroyImageView(device, reflectionColorView, nullptr);
+        reflectionColorView = VK_NULL_HANDLE;
+    }
+    if (reflectionDepthView != VK_NULL_HANDLE) {
+        vkDestroyImageView(device, reflectionDepthView, nullptr);
+        reflectionDepthView = VK_NULL_HANDLE;
+    }
+    if (reflectionColorImage != VK_NULL_HANDLE) {
+        vkDestroyImage(device, reflectionColorImage, nullptr);
+        reflectionColorImage = VK_NULL_HANDLE;
+    }
+    if (reflectionColorMemory != VK_NULL_HANDLE) {
+        vkFreeMemory(device, reflectionColorMemory, nullptr);
+        reflectionColorMemory = VK_NULL_HANDLE;
+    }
+    if (reflectionDepthImage != VK_NULL_HANDLE) {
+        vkDestroyImage(device, reflectionDepthImage, nullptr);
+        reflectionDepthImage = VK_NULL_HANDLE;
+    }
+    if (reflectionDepthMemory != VK_NULL_HANDLE) {
+        vkFreeMemory(device, reflectionDepthMemory, nullptr);
+        reflectionDepthMemory = VK_NULL_HANDLE;
+    }
+    reflectionTexture.image = VK_NULL_HANDLE;
+    reflectionTexture.memory = VK_NULL_HANDLE;
+    reflectionTexture.view = VK_NULL_HANDLE;
+    reflectionTexture.width = 0;
+    reflectionTexture.height = 0;
+    reflectionImageReady = false;
+}
+
 void VulkanCubeApp::createDescriptorSetLayout()
 {
     VkDescriptorSetLayoutBinding uboLayoutBinding{};
@@ -961,6 +1166,7 @@ void VulkanCubeApp::createPipelines()
 
     auto pipelines = vkcore::createCubePipelines(inputs);
     pipelineLayout = pipelines.pipelineLayout;
+    stylePipelines.assign(pipelines.stylePipelines.begin(), pipelines.stylePipelines.end());
     graphicsPipeline = pipelines.graphicsPipeline;
     linePipeline = pipelines.linePipeline;
     shadowPipeline = pipelines.shadowPipeline;
@@ -1212,12 +1418,20 @@ void VulkanCubeApp::createUniformBuffers()
     uniformBuffers.resize(swapChainImages.size());
     uniformBuffersMemory.resize(swapChainImages.size());
     uniformBuffersMapped.resize(swapChainImages.size());
+    reflectionUniformBuffers.resize(swapChainImages.size());
+    reflectionUniformBuffersMemory.resize(swapChainImages.size());
+    reflectionUniformBuffersMapped.resize(swapChainImages.size());
 
     for (size_t i = 0; i < swapChainImages.size(); ++i) {
         createBuffer(bufferSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                      uniformBuffers[i], uniformBuffersMemory[i]);
         vkMapMemory(device, uniformBuffersMemory[i], 0, bufferSize, 0, &uniformBuffersMapped[i]);
+
+        createBuffer(bufferSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                     reflectionUniformBuffers[i], reflectionUniformBuffersMemory[i]);
+        vkMapMemory(device, reflectionUniformBuffersMemory[i], 0, bufferSize, 0, &reflectionUniformBuffersMapped[i]);
     }
 }
 
@@ -1225,15 +1439,15 @@ void VulkanCubeApp::createDescriptorPool()
 {
     std::array<VkDescriptorPoolSize, 2> poolSizes{};
     poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    poolSizes[0].descriptorCount = static_cast<uint32_t>(swapChainImages.size());
+    poolSizes[0].descriptorCount = static_cast<uint32_t>(swapChainImages.size() * 2);
     poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSizes[1].descriptorCount = static_cast<uint32_t>(swapChainImages.size());
+    poolSizes[1].descriptorCount = static_cast<uint32_t>(swapChainImages.size() * 2);
 
     VkDescriptorPoolCreateInfo poolInfo{};
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
     poolInfo.pPoolSizes = poolSizes.data();
-    poolInfo.maxSets = static_cast<uint32_t>(swapChainImages.size());
+    poolInfo.maxSets = static_cast<uint32_t>(swapChainImages.size() * 2);
 
     if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &descriptorPool) != VK_SUCCESS) {
         throw std::runtime_error("Failed to create descriptor pool");
@@ -1254,11 +1468,21 @@ void VulkanCubeApp::createDescriptorSets()
         throw std::runtime_error("Failed to allocate descriptor sets");
     }
 
+    reflectionDescriptorSets.resize(swapChainImages.size());
+    if (vkAllocateDescriptorSets(device, &allocInfo, reflectionDescriptorSets.data()) != VK_SUCCESS) {
+        throw std::runtime_error("Failed to allocate reflection descriptor sets");
+    }
+
     for (size_t i = 0; i < swapChainImages.size(); ++i) {
         VkDescriptorBufferInfo bufferInfo{};
         bufferInfo.buffer = uniformBuffers[i];
         bufferInfo.offset = 0;
         bufferInfo.range = sizeof(CameraBufferObject);
+
+        VkDescriptorBufferInfo reflectionBufferInfo{};
+        reflectionBufferInfo.buffer = reflectionUniformBuffers[i];
+        reflectionBufferInfo.offset = 0;
+        reflectionBufferInfo.range = sizeof(CameraBufferObject);
 
         VkDescriptorImageInfo imageInfo{};
         imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -1274,6 +1498,15 @@ void VulkanCubeApp::createDescriptorSets()
         descriptorWrite.descriptorCount = 1;
         descriptorWrite.pBufferInfo = &bufferInfo;
 
+        VkWriteDescriptorSet reflectionWrite{};
+        reflectionWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        reflectionWrite.dstSet = reflectionDescriptorSets[i];
+        reflectionWrite.dstBinding = 0;
+        reflectionWrite.dstArrayElement = 0;
+        reflectionWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        reflectionWrite.descriptorCount = 1;
+        reflectionWrite.pBufferInfo = &reflectionBufferInfo;
+
         VkWriteDescriptorSet samplerWrite{};
         samplerWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         samplerWrite.dstSet = descriptorSets[i];
@@ -1283,8 +1516,20 @@ void VulkanCubeApp::createDescriptorSets()
         samplerWrite.descriptorCount = 1;
         samplerWrite.pImageInfo = &imageInfo;
 
+        VkWriteDescriptorSet reflectionSamplerWrite{};
+        reflectionSamplerWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        reflectionSamplerWrite.dstSet = reflectionDescriptorSets[i];
+        reflectionSamplerWrite.dstBinding = 1;
+        reflectionSamplerWrite.dstArrayElement = 0;
+        reflectionSamplerWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        reflectionSamplerWrite.descriptorCount = 1;
+        reflectionSamplerWrite.pImageInfo = &imageInfo;
+
         std::array<VkWriteDescriptorSet, 2> descriptorWrites = {descriptorWrite, samplerWrite};
         vkUpdateDescriptorSets(device, static_cast<uint32_t>(descriptorWrites.size()), descriptorWrites.data(), 0, nullptr);
+
+        std::array<VkWriteDescriptorSet, 2> reflectionWrites = {reflectionWrite, reflectionSamplerWrite};
+        vkUpdateDescriptorSets(device, static_cast<uint32_t>(reflectionWrites.size()), reflectionWrites.data(), 0, nullptr);
     }
 }
 
@@ -1371,6 +1616,14 @@ void VulkanCubeApp::destroyTextureCache()
     textureCache.clear();
 }
 
+void VulkanCubeApp::destroyColorTextureCache()
+{
+    for (auto& [_, resource] : colorTextureCache) {
+        destroyTextureResource(resource);
+    }
+    colorTextureCache.clear();
+}
+
 void VulkanCubeApp::destroyMeshCache()
 {
     for (auto& [_, buffers] : meshCache) {
@@ -1397,6 +1650,7 @@ void VulkanCubeApp::destroyMeshCache()
 void VulkanCubeApp::destroyMaterialResources()
 {
     destroyTextureCache();
+    destroyColorTextureCache();
     if (defaultTexture.image != VK_NULL_HANDLE) {
         destroyTextureResource(defaultTexture);
     }
@@ -1478,6 +1732,15 @@ VulkanCubeApp::MeshGpuBuffers& VulkanCubeApp::getOrCreateMesh(const vkengine::Re
 
 VulkanCubeApp::TextureResource& VulkanCubeApp::getOrCreateTexture(const vkengine::RenderComponent& renderComponent)
 {
+    if (renderComponent.albedoTexture == "__reflection__" && reflectionTexture.view != VK_NULL_HANDLE) {
+        return reflectionTexture;
+    }
+    if (renderComponent.albedoTexture == "__default__") {
+        return defaultTexture;
+    }
+    if (shouldUseColorTexture(renderComponent)) {
+        return getOrCreateColorTexture(renderComponent.baseColor);
+    }
     if (renderComponent.albedoTexture.empty()) {
         return defaultTexture;
     }
@@ -1497,6 +1760,43 @@ VulkanCubeApp::TextureResource& VulkanCubeApp::getOrCreateTexture(const vkengine
         std::cerr << "Failed to load texture '" << texturePath << "': " << e.what() << "\n";
         return defaultTexture;
     }
+}
+
+bool VulkanCubeApp::shouldUseColorTexture(const vkengine::RenderComponent& renderComponent) const
+{
+    if (!renderComponent.albedoTexture.empty()) {
+        return false;
+    }
+    const glm::vec3 base = glm::clamp(glm::vec3(renderComponent.baseColor), glm::vec3(0.0f), glm::vec3(1.0f));
+    const float maxDelta = std::max(std::abs(base.r - 1.0f), std::max(std::abs(base.g - 1.0f), std::abs(base.b - 1.0f)));
+    return maxDelta > 0.02f;
+}
+
+VulkanCubeApp::TextureResource& VulkanCubeApp::getOrCreateColorTexture(const glm::vec4& color)
+{
+    const glm::vec3 clamped = glm::clamp(glm::vec3(color), glm::vec3(0.0f), glm::vec3(1.0f));
+    const auto toByte = [](float value) {
+        return static_cast<std::uint8_t>(std::round(glm::clamp(value, 0.0f, 1.0f) * 255.0f));
+    };
+    const std::uint32_t r = toByte(clamped.r);
+    const std::uint32_t g = toByte(clamped.g);
+    const std::uint32_t b = toByte(clamped.b);
+    const std::uint32_t key = (r << 16) | (g << 8) | b;
+
+    auto it = colorTextureCache.find(key);
+    if (it != colorTextureCache.end()) {
+        return it->second;
+    }
+
+    vkengine::TextureData data{};
+    data.width = 1;
+    data.height = 1;
+    data.channels = 4;
+    data.pixels = {static_cast<std::uint8_t>(r), static_cast<std::uint8_t>(g), static_cast<std::uint8_t>(b), 255};
+
+    TextureResource& texture = colorTextureCache[key];
+    uploadTextureToGpu("__color__", data, texture);
+    return texture;
 }
 
 void VulkanCubeApp::uploadMeshToGpu(const std::string& cacheKey, const vkengine::MeshData& meshData)
@@ -1822,6 +2122,20 @@ void VulkanCubeApp::buildUi(float deltaSeconds)
             ImGui::Checkbox("Animate key light", &animateLight);
             ImGui::Checkbox("Show ImGui demo", &showUiDemo);
 
+            static const char* kStyleLabels[] = {
+                "Standard",
+                "Toon",
+                "Rim",
+                "Heat",
+                "Gradient",
+                "Wireframe",
+                "Glow"
+            };
+            int styleIndex = static_cast<int>(shaderStyle);
+            if (ImGui::Combo("Shader style", &styleIndex, kStyleLabels, static_cast<int>(IM_ARRAYSIZE(kStyleLabels)))) {
+                shaderStyle = static_cast<ShaderStyle>(styleIndex);
+            }
+
             auto& camera = engine->scene().camera();
             float moveSpeed = camera.getMovementSpeed();
             if (ImGui::SliderFloat("Camera speed", &moveSpeed, 0.5f, 20.0f)) {
@@ -1865,10 +2179,58 @@ void VulkanCubeApp::buildUi(float deltaSeconds)
         ImGui::ShowDemoWindow(&showUiDemo);
     }
 
+    if (console.enabled) {
+        ImGui::SetNextWindowSize(ImVec2(520.0f, 260.0f), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowPos(ImVec2(20.0f, 20.0f), ImGuiCond_FirstUseEver);
+        if (ImGui::Begin("Console", &console.enabled)) {
+            ImGui::Checkbox("Auto-scroll", &console.autoScroll);
+            ImGui::SameLine();
+            if (ImGui::Button("Clear")) {
+                console.lines.clear();
+            }
+
+            ImGui::Separator();
+            ImGui::BeginChild("ConsoleScroll", ImVec2(0, -ImGui::GetFrameHeightWithSpacing() - 6.0f), false, ImGuiWindowFlags_HorizontalScrollbar);
+            for (const auto& line : console.lines) {
+                ImGui::TextUnformatted(line.c_str());
+            }
+            if (console.autoScroll && console.scrollToBottom) {
+                ImGui::SetScrollHereY(1.0f);
+            }
+            console.scrollToBottom = false;
+            ImGui::EndChild();
+
+            ImGui::Separator();
+            const std::string label = console.prompt + ">";
+            ImGui::SetNextItemWidth(-1.0f);
+            if (ImGui::InputText(label.c_str(), &console.input, ImGuiInputTextFlags_EnterReturnsTrue)) {
+                const std::string line = console.input;
+                console.input.clear();
+                if (!line.empty()) {
+                    addConsoleLine(console.prompt + "> " + line);
+                }
+            }
+        }
+        ImGui::End();
+    }
+
     // Always run any registered custom UI callback (even if no widgets are created here).
     if (customUi) {
         customUi(deltaSeconds);
     }
+}
+
+void VulkanCubeApp::addConsoleLine(std::string line)
+{
+    if (line.empty()) {
+        return;
+    }
+    console.lines.emplace_back(std::move(line));
+    if (static_cast<int>(console.lines.size()) > console.maxLines) {
+        const auto overflow = console.lines.size() - static_cast<size_t>(console.maxLines);
+        console.lines.erase(console.lines.begin(), console.lines.begin() + static_cast<std::ptrdiff_t>(overflow));
+    }
+    console.scrollToBottom = true;
 }
 
 void VulkanCubeApp::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex, float deltaSeconds)
@@ -1884,14 +2246,29 @@ void VulkanCubeApp::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t 
         recordNBodyCompute(commandBuffer, deltaSeconds);
     }
 
-    auto buildObjectPushConstants = [](const glm::mat4& modelMatrix, const vkengine::RenderComponent& render) {
+    auto buildObjectPushConstants = [&](const glm::mat4& modelMatrix, const vkengine::RenderComponent& render) {
         vkcore::ObjectPushConstants push{};
         push.model = modelMatrix;
-        push.baseColor = render.baseColor;
+        if (shouldUseColorTexture(render)) {
+            push.baseColor = glm::vec4(1.0f, 1.0f, 1.0f, render.baseColor.a);
+        } else {
+            push.baseColor = render.baseColor;
+        }
         push.materialParams = glm::vec4(render.metallic, render.roughness, render.specular, render.opacity);
         push.emissiveParams = glm::vec4(render.emissive, render.emissiveIntensity);
+        const bool isMirror = render.albedoTexture == "__reflection__";
+        push.mirrorParams = glm::vec4(isMirror ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
         return push;
     };
+
+    const auto& scene = engine->scene();
+    const auto& camera = scene.camera();
+    const glm::mat4 mainView = camera.viewMatrix();
+    const auto height = std::max<uint32_t>(1u, swapChainExtent.height);
+    const float aspect = static_cast<float>(swapChainExtent.width) / static_cast<float>(height);
+    const glm::mat4 mainProj = camera.projectionMatrix(aspect);
+    const glm::vec3 mainCameraPosition = camera.getPosition();
+    const size_t styleIndex = static_cast<size_t>(shaderStyle);
 
     // Transition shadow map to depth attachment layout for rendering
     VkImageMemoryBarrier toDepthBarrier{};
@@ -2054,6 +2431,123 @@ void VulkanCubeApp::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t 
 
     shadowImageReady = true;
 
+    if (mirrorAvailable && reflectionRenderPass != VK_NULL_HANDLE && reflectionFramebuffer != VK_NULL_HANDLE) {
+        VkImageMemoryBarrier reflectionBarrier{};
+        reflectionBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        reflectionBarrier.oldLayout = reflectionImageReady ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                                                           : VK_IMAGE_LAYOUT_UNDEFINED;
+        reflectionBarrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        reflectionBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        reflectionBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        reflectionBarrier.image = reflectionColorImage;
+        reflectionBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        reflectionBarrier.subresourceRange.baseMipLevel = 0;
+        reflectionBarrier.subresourceRange.levelCount = 1;
+        reflectionBarrier.subresourceRange.baseArrayLayer = 0;
+        reflectionBarrier.subresourceRange.layerCount = 1;
+        reflectionBarrier.srcAccessMask = reflectionImageReady ? VK_ACCESS_SHADER_READ_BIT : 0;
+        reflectionBarrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+
+        VkPipelineStageFlags reflectionSrcStage = reflectionImageReady
+                                                      ? VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT
+                                                      : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+
+        vkCmdPipelineBarrier(commandBuffer,
+                             reflectionSrcStage,
+                             VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                             0,
+                             0, nullptr,
+                             0, nullptr,
+                             1, &reflectionBarrier);
+
+        VkRenderPassBeginInfo reflectionPassInfo{};
+        reflectionPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+        reflectionPassInfo.renderPass = reflectionRenderPass;
+        reflectionPassInfo.framebuffer = reflectionFramebuffer;
+        reflectionPassInfo.renderArea.offset = {0, 0};
+        reflectionPassInfo.renderArea.extent = swapChainExtent;
+
+        std::array<VkClearValue, 2> reflectionClears{};
+        reflectionClears[0].color = {{skySettings.color.r, skySettings.color.g, skySettings.color.b, skySettings.color.a}};
+        reflectionClears[1].depthStencil = {1.0f, 0};
+        reflectionPassInfo.clearValueCount = static_cast<uint32_t>(reflectionClears.size());
+        reflectionPassInfo.pClearValues = reflectionClears.data();
+
+        vkCmdBeginRenderPass(commandBuffer, &reflectionPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+
+        VkPipeline reflectionPipeline = graphicsPipeline;
+        if (styleIndex < stylePipelines.size() && stylePipelines[styleIndex] != VK_NULL_HANDLE) {
+            reflectionPipeline = stylePipelines[styleIndex];
+        }
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, reflectionPipeline);
+        vkCmdBindVertexBuffers(commandBuffer, 0, 1, cubeVertexBuffers, cubeOffsets);
+        vkCmdBindIndexBuffer(commandBuffer, indexBuffer, 0, VK_INDEX_TYPE_UINT16);
+        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout,
+                                0, 1, &reflectionDescriptorSets[imageIndex], 0, nullptr);
+        VkDescriptorSet reflectionBoundSet = VK_NULL_HANDLE;
+        auto bindReflectionMaterial = [&](VkDescriptorSet set) {
+            VkDescriptorSet target = set != VK_NULL_HANDLE ? set : defaultTexture.descriptorSet;
+            if (target == VK_NULL_HANDLE || target == reflectionBoundSet) {
+                return;
+            }
+            vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout,
+                                    1, 1, &target, 0, nullptr);
+            reflectionBoundSet = target;
+        };
+        bindReflectionMaterial(defaultTexture.descriptorSet);
+
+        for (const auto& object : scene.objects()) {
+            const auto& render = object.render();
+            if (!render.visible || render.albedoTexture == "__reflection__") {
+                continue;
+            }
+            switch (object.mesh()) {
+            case vkengine::MeshType::Cube: {
+                const auto& texture = getOrCreateTexture(render);
+                bindReflectionMaterial(texture.descriptorSet);
+                const glm::mat4 modelMatrix = object.modelMatrix();
+                const auto push = buildObjectPushConstants(modelMatrix, render);
+                vkCmdPushConstants(commandBuffer, pipelineLayout,
+                                   VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                                   0, sizeof(push), &push);
+                vkCmdDrawIndexed(commandBuffer, static_cast<uint32_t>(INDICES.size()), 1, 0, 0, 0);
+                break;
+            }
+            case vkengine::MeshType::CustomMesh: {
+                if (render.meshResource.empty()) {
+                    continue;
+                }
+                auto& meshBuffers = getOrCreateMesh(render);
+                if (meshBuffers.indexCount == 0) {
+                    continue;
+                }
+                VkBuffer meshVertexBuffers[] = {meshBuffers.vertexBuffer};
+                VkDeviceSize meshOffsets[] = {0};
+                vkCmdBindVertexBuffers(commandBuffer, 0, 1, meshVertexBuffers, meshOffsets);
+                vkCmdBindIndexBuffer(commandBuffer, meshBuffers.indexBuffer, 0, meshBuffers.indexType);
+                const auto& texture = getOrCreateTexture(render);
+                bindReflectionMaterial(texture.descriptorSet);
+                const glm::mat4 modelMatrix = object.modelMatrix();
+                const auto push = buildObjectPushConstants(modelMatrix, render);
+                vkCmdPushConstants(commandBuffer, pipelineLayout,
+                                   VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                                   0, sizeof(push), &push);
+                vkCmdDrawIndexed(commandBuffer, meshBuffers.indexCount, 1, 0, 0, 0);
+                vkCmdBindVertexBuffers(commandBuffer, 0, 1, cubeVertexBuffers, cubeOffsets);
+                vkCmdBindIndexBuffer(commandBuffer, indexBuffer, 0, VK_INDEX_TYPE_UINT16);
+                break;
+            }
+            default:
+                break;
+            }
+        }
+
+        vkCmdEndRenderPass(commandBuffer);
+
+        reflectionImageReady = true;
+
+    }
+
     VkRenderPassBeginInfo renderPassInfo{};
     renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
     renderPassInfo.renderPass = renderPass;
@@ -2069,7 +2563,11 @@ void VulkanCubeApp::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t 
 
     vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
 
-    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
+    VkPipeline activePipeline = graphicsPipeline;
+    if (styleIndex < stylePipelines.size() && stylePipelines[styleIndex] != VK_NULL_HANDLE) {
+        activePipeline = stylePipelines[styleIndex];
+    }
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, activePipeline);
     vkCmdBindVertexBuffers(commandBuffer, 0, 1, cubeVertexBuffers, cubeOffsets);
     vkCmdBindIndexBuffer(commandBuffer, indexBuffer, 0, VK_INDEX_TYPE_UINT16);
     vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout,
@@ -2086,6 +2584,73 @@ void VulkanCubeApp::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t 
         boundMaterialSet = target;
     };
     bindMaterialSet(defaultTexture.descriptorSet);
+
+    if (!particleMeshInstances.empty()) {
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, activePipeline);
+        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout,
+                                0, 1, &descriptorSets[imageIndex], 0, nullptr);
+        bindMaterialSet(defaultTexture.descriptorSet);
+
+        for (const auto& instance : particleMeshInstances) {
+            const auto& render = instance.render;
+            if (!render.visible) {
+                continue;
+            }
+
+            switch (render.mesh) {
+            case vkengine::MeshType::Cube: {
+                vkCmdBindVertexBuffers(commandBuffer, 0, 1, cubeVertexBuffers, cubeOffsets);
+                vkCmdBindIndexBuffer(commandBuffer, indexBuffer, 0, VK_INDEX_TYPE_UINT16);
+                const auto& texture = getOrCreateTexture(render);
+                bindMaterialSet(texture.descriptorSet);
+                const auto push = buildObjectPushConstants(instance.model, render);
+                vkCmdPushConstants(commandBuffer, pipelineLayout,
+                                   VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                                   0, sizeof(push), &push);
+                vkCmdDrawIndexed(commandBuffer, static_cast<uint32_t>(INDICES.size()), 1, 0, 0, 0);
+                break;
+            }
+            case vkengine::MeshType::CustomMesh: {
+                if (render.meshResource.empty()) {
+                    continue;
+                }
+                auto& meshBuffers = getOrCreateMesh(render);
+                if (meshBuffers.indexCount == 0) {
+                    continue;
+                }
+                VkBuffer meshVertexBuffers[] = {meshBuffers.vertexBuffer};
+                VkDeviceSize meshOffsets[] = {0};
+                vkCmdBindVertexBuffers(commandBuffer, 0, 1, meshVertexBuffers, meshOffsets);
+                vkCmdBindIndexBuffer(commandBuffer, meshBuffers.indexBuffer, 0, meshBuffers.indexType);
+                const auto& texture = getOrCreateTexture(render);
+                bindMaterialSet(texture.descriptorSet);
+                const auto push = buildObjectPushConstants(instance.model, render);
+                vkCmdPushConstants(commandBuffer, pipelineLayout,
+                                   VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                                   0, sizeof(push), &push);
+                vkCmdDrawIndexed(commandBuffer, meshBuffers.indexCount, 1, 0, 0, 0);
+                break;
+            }
+            case vkengine::MeshType::WireCubeLines: {
+                vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, linePipeline);
+                VkBuffer lineBuffers[] = {lineVertexBuffer};
+                VkDeviceSize lineOffsets[] = {0};
+                vkCmdBindVertexBuffers(commandBuffer, 0, 1, lineBuffers, lineOffsets);
+                const auto& texture = getOrCreateTexture(render);
+                bindMaterialSet(texture.descriptorSet);
+                const auto push = buildObjectPushConstants(instance.model, render);
+                vkCmdPushConstants(commandBuffer, pipelineLayout,
+                                   VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                                   0, sizeof(push), &push);
+                vkCmdDraw(commandBuffer, static_cast<uint32_t>(LINE_VERTICES.size()), 1, 0, 0);
+                vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, activePipeline);
+                break;
+            }
+            default:
+                break;
+            }
+        }
+    }
 
     for (const auto& object : objects) {
         const auto& render = object.render();
@@ -2120,7 +2685,7 @@ void VulkanCubeApp::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t 
                                VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                                0, sizeof(push), &push);
             vkCmdDraw(commandBuffer, static_cast<uint32_t>(LINE_VERTICES.size()), 1, 0, 0);
-            vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
+            vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, activePipeline);
             break;
         }
         case vkengine::MeshType::CustomMesh: {
@@ -2183,7 +2748,12 @@ void VulkanCubeApp::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t 
         vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout,
                                 0, 1, &descriptorSets[imageIndex], 0, nullptr);
         bindMaterialSet(defaultTexture.descriptorSet);
-        vkCmdDraw(commandBuffer, particleVertexCount, 1, 0, 0);
+        for (const auto& range : particleDrawRanges) {
+            if (range.count == 0) {
+                continue;
+            }
+            vkCmdDraw(commandBuffer, range.count, 1, range.offset, 0);
+        }
     }
 
     uiLayer.render(commandBuffer);
@@ -2295,44 +2865,86 @@ void VulkanCubeApp::finalizeCapture(uint32_t imageIndex)
 
     const uint32_t width = captureWidth;
     const uint32_t height = captureHeight;
-    const size_t rowBytes = static_cast<size_t>(width) * 4;
-    for (uint32_t y = 0; y < height / 2; ++y) {
-        auto* top = rgba.data() + rowBytes * y;
-        auto* bottom = rgba.data() + rowBytes * (height - 1 - y);
-        for (size_t x = 0; x < rowBytes; ++x) {
-            std::swap(top[x], bottom[x]);
-        }
-    }
 
     captureCompleted = vkengine::writeJpeg(capturePath, static_cast<int>(width), static_cast<int>(height), rgba, 92);
     captureFailed = !captureCompleted;
     captureRequested = false;
 }
 
-void VulkanCubeApp::updateUniformBuffer(uint32_t currentImage)
+void VulkanCubeApp::populateCameraBufferObject(const vkengine::Camera& camera,
+                                               const glm::mat4& view,
+                                               const glm::mat4& proj,
+                                               const glm::vec3& cameraPosition,
+                                               const glm::mat4& reflectionViewProj,
+                                               const glm::vec4& reflectionPlane,
+                                               CameraBufferObject& ubo)
 {
     const auto& scene = engine->scene();
-    const auto& camera = scene.camera();
 
-    CameraBufferObject ubo{};
-    ubo.view = camera.viewMatrix();
-    const auto height = std::max<uint32_t>(1u, swapChainExtent.height);
-    const float aspect = static_cast<float>(swapChainExtent.width) / static_cast<float>(height);
-    ubo.proj = camera.projectionMatrix(aspect);
-    ubo.cameraPosition = glm::vec4(camera.getPosition(), 1.0f);
+    ubo.view = view;
+    ubo.proj = proj;
+    ubo.cameraPosition = glm::vec4(cameraPosition, 1.0f);
+    ubo.reflectionViewProj = reflectionViewProj;
+    ubo.reflectionPlane = reflectionPlane;
 
     glm::vec3 lightPos{3.0f, 4.0f, 2.0f};
     glm::vec3 lightColor{1.0f};
-    float lightIntensity = 3.0f;
+    float lightIntensity = 2.0f;
+    int activeLights = 0;
+
+    for (int i = 0; i < 4; ++i) {
+        ubo.lightPositions[i] = glm::vec4(0.0f);
+        ubo.lightColors[i] = glm::vec4(0.0f);
+        ubo.lightDirections[i] = glm::vec4(0.0f, -1.0f, 0.0f, 0.0f);
+        ubo.lightSpotAngles[i] = glm::vec4(1.0f, 0.0f, 0.0f, 0.0f);
+        ubo.lightAreaParams[i] = glm::vec4(0.0f);
+    }
 
     for (const auto& light : scene.lights()) {
         if (!light.isEnabled()) {
             continue;
         }
-        lightPos = light.position();
-        lightColor = light.color();
-        lightIntensity = light.intensity();
-        break;
+        if (activeLights < 4) {
+            const glm::vec3 position = light.position();
+            glm::vec3 direction = light.direction();
+            if (!std::isfinite(direction.x) || glm::length2(direction) < 1e-4f) {
+                direction = glm::vec3(0.0f, -1.0f, 0.0f);
+            }
+            direction = glm::normalize(direction);
+            const float intensity = std::max(0.0f, light.intensity());
+            const float range = std::max(0.0f, light.range());
+            const float innerAngle = glm::clamp(light.innerConeAngle(), 0.0f, 3.1415926f);
+            const float outerAngle = glm::clamp(light.outerConeAngle(), 0.0f, 3.1415926f);
+            float innerCos = std::cos(innerAngle);
+            float outerCos = std::cos(outerAngle);
+            if (innerCos < outerCos) {
+                std::swap(innerCos, outerCos);
+            }
+            const glm::vec2 areaSize = light.areaSize();
+            const float halfWidth = std::max(0.0f, areaSize.x * 0.5f);
+            const float halfHeight = std::max(0.0f, areaSize.y * 0.5f);
+
+            ubo.lightPositions[activeLights] = glm::vec4(position, 1.0f);
+            ubo.lightColors[activeLights] = glm::vec4(light.color(), intensity);
+            ubo.lightDirections[activeLights] = glm::vec4(direction, static_cast<float>(light.type()));
+            ubo.lightSpotAngles[activeLights] = glm::vec4(innerCos, outerCos, range, 0.0f);
+            ubo.lightAreaParams[activeLights] = glm::vec4(halfWidth, halfHeight, range, 0.0f);
+            ++activeLights;
+        }
+        if (activeLights == 1) {
+            lightPos = light.position();
+            lightColor = light.color();
+            lightIntensity = light.intensity();
+        }
+    }
+
+    if (activeLights == 0) {
+        ubo.lightPositions[0] = glm::vec4(lightPos, 1.0f);
+        ubo.lightColors[0] = glm::vec4(lightColor, std::max(0.0f, lightIntensity));
+        ubo.lightDirections[0] = glm::vec4(0.0f, -1.0f, 0.0f, static_cast<float>(vkengine::LightType::Point));
+        ubo.lightSpotAngles[0] = glm::vec4(1.0f, 0.0f, 0.0f, 0.0f);
+        ubo.lightAreaParams[0] = glm::vec4(0.0f);
+        activeLights = 1;
     }
 
     glm::vec3 animatedLightPos = lightPos;
@@ -2342,6 +2954,10 @@ void VulkanCubeApp::updateUniformBuffer(uint32_t currentImage)
         animatedLightPos = glm::vec3(std::cos(t * 0.35f) * orbitRadius,
                                       3.5f + std::sin(t * 0.65f) * 1.0f,
                                       std::sin(t * 0.35f) * orbitRadius);
+    }
+    if (activeLights > 0) {
+        ubo.lightPositions[0] = glm::vec4(animatedLightPos, 1.0f);
+        ubo.lightColors[0] = glm::vec4(lightColor, std::max(0.0f, lightIntensity));
     }
 
     const glm::vec3 lightTarget = glm::vec3(0.0f);
@@ -2357,8 +2973,7 @@ void VulkanCubeApp::updateUniformBuffer(uint32_t currentImage)
     constexpr float FAR_LIGHT_DISTANCE = 75.0f;
     const glm::vec3 farLightPos = lightTarget + lightDirection * FAR_LIGHT_DISTANCE;
 
-    ubo.lightPosition = glm::vec4(farLightPos, 1.0f);
-    ubo.lightColorIntensity = glm::vec4(lightColor, lightIntensity);
+    ubo.lightParams = glm::vec4(static_cast<float>(activeLights), 0.0f, 0.0f, 0.0f);
     ubo.shadingParams = glm::vec4(static_cast<float>(visualizationMode),
                                   shadowsEnabled ? 1.0f : 0.0f,
                                   specularEnabled ? 1.0f : 0.0f,
@@ -2380,8 +2995,87 @@ void VulkanCubeApp::updateUniformBuffer(uint32_t currentImage)
                                            -SHADOW_RANGE, SHADOW_RANGE,
                                            1.0f, 150.0f);
     ubo.lightViewProj = lightProj * lightView;
+}
+
+void VulkanCubeApp::updateUniformBuffer(uint32_t currentImage)
+{
+    const auto& scene = engine->scene();
+    const auto& camera = scene.camera();
+
+    const glm::mat4 view = camera.viewMatrix();
+    const auto height = std::max<uint32_t>(1u, swapChainExtent.height);
+    const float aspect = static_cast<float>(swapChainExtent.width) / static_cast<float>(height);
+    const glm::mat4 proj = camera.projectionMatrix(aspect);
+    const glm::vec3 cameraPosition = camera.getPosition();
+
+    mirrorAvailable = false;
+    glm::vec4 reflectionPlane{0.0f, 1.0f, 0.0f, 0.0f};
+    glm::mat4 reflectionView = view;
+    glm::mat4 reflectionProj = proj;
+    glm::vec3 reflectionCameraPosition = cameraPosition;
+
+    for (const auto& object : scene.objects()) {
+        const auto& render = object.render();
+        if (render.albedoTexture != "__reflection__") {
+            continue;
+        }
+
+        const glm::mat4 modelMatrix = object.modelMatrix();
+        glm::vec3 planeNormal = glm::normalize(glm::mat3(modelMatrix) * glm::vec3(0.0f, 0.0f, 1.0f));
+        if (!std::isfinite(planeNormal.x) || glm::length2(planeNormal) < 1e-4f) {
+            planeNormal = glm::vec3(0.0f, 0.0f, 1.0f);
+        }
+        const glm::vec3 planePoint = glm::vec3(modelMatrix[3]);
+        const float planeD = -glm::dot(planeNormal, planePoint);
+        reflectionPlane = glm::vec4(planeNormal, planeD);
+
+        const glm::vec3 cameraForward = camera.forwardVector();
+        const glm::vec3 cameraUp = camera.upVector();
+
+        auto reflectPoint = [&](const glm::vec3& point) {
+            const float dist = glm::dot(planeNormal, point) + planeD;
+            return point - 2.0f * dist * planeNormal;
+        };
+        auto reflectVector = [&](const glm::vec3& vec) {
+            return vec - 2.0f * glm::dot(planeNormal, vec) * planeNormal;
+        };
+
+        reflectionCameraPosition = reflectPoint(cameraPosition);
+        const glm::vec3 reflectedForward = reflectVector(cameraForward);
+        glm::vec3 reflectedUp = reflectVector(cameraUp);
+        if (glm::length2(reflectedUp) < 1e-4f) {
+            reflectedUp = glm::vec3(0.0f, 1.0f, 0.0f);
+        }
+        reflectionView = glm::lookAt(reflectionCameraPosition,
+                                     reflectionCameraPosition + reflectedForward,
+                                     reflectedUp);
+        reflectionProj = proj;
+        mirrorAvailable = true;
+        break;
+    }
+
+    cachedReflectionView = reflectionView;
+    cachedReflectionProj = reflectionProj;
+    cachedReflectionViewProj = reflectionProj * reflectionView;
+    cachedReflectionPlane = reflectionPlane;
+    cachedReflectionCameraPosition = reflectionCameraPosition;
+
+    CameraBufferObject ubo{};
+    populateCameraBufferObject(camera, view, proj, cameraPosition, cachedReflectionViewProj, cachedReflectionPlane, ubo);
 
     std::memcpy(uniformBuffersMapped[currentImage], &ubo, sizeof(ubo));
+
+    if (mirrorAvailable && reflectionUniformBuffersMapped.size() > currentImage && reflectionUniformBuffersMapped[currentImage] != nullptr) {
+        CameraBufferObject reflectionUbo{};
+        populateCameraBufferObject(camera,
+                                   cachedReflectionView,
+                                   cachedReflectionProj,
+                                   cachedReflectionCameraPosition,
+                                   cachedReflectionViewProj,
+                                   cachedReflectionPlane,
+                                   reflectionUbo);
+        std::memcpy(reflectionUniformBuffersMapped[currentImage], &reflectionUbo, sizeof(reflectionUbo));
+    }
 }
 
 void VulkanCubeApp::updateParticleVertexBuffer(float deltaSeconds)
@@ -2393,6 +3087,11 @@ void VulkanCubeApp::updateParticleVertexBuffer(float deltaSeconds)
 
     particleVertexCount = 0;
     cpuParticleVertices.clear();
+    for (auto& range : particleDrawRanges) {
+        range.offset = 0;
+        range.count = 0;
+    }
+    particleMeshInstances.clear();
 
     if (engine == nullptr) {
         return;
@@ -2406,32 +3105,70 @@ void VulkanCubeApp::updateParticleVertexBuffer(float deltaSeconds)
         cameraUp = glm::vec3(0.0f, 1.0f, 0.0f);
     }
 
-    engine->particles().forEachAliveParticle([&](const vkengine::Particle& particle) {
+    std::array<std::vector<ParticleVertex>, vkengine::kParticleShapeCount> shapeBuckets;
+    engine->particles().forEachAliveParticleWithEmitter([&](const vkengine::ParticleEmitter& emitter, const vkengine::Particle& particle) {
         const glm::vec3 center = particle.position;
-        const float billboardSize = std::max(0.01f, particle.scale * 0.5f);
+        const float normalizedAge = particle.lifetime > 0.0f
+                        ? glm::clamp(particle.age / particle.lifetime, 0.0f, 1.0f)
+                        : 1.0f;
+        const float fade = 1.0f - normalizedAge;
+        const float hotCore = std::pow(fade, 2.6f);
+        const float taper = glm::mix(1.0f, 0.35f, normalizedAge);
+        const float flicker = 0.75f + 0.25f * glm::sin(20.0f * particle.age + glm::dot(particle.position, glm::vec3(11.3f, 7.1f, 5.7f)));
+        const float billboardSize = std::max(0.018f, particle.scale * (0.35f + 0.95f * hotCore) * taper);
         const glm::vec3 right = cameraRight * billboardSize;
         const glm::vec3 up = cameraUp * billboardSize;
 
-        const float normalizedAge = particle.lifetime > 0.0f
-                                        ? glm::clamp(particle.age / particle.lifetime, 0.0f, 1.0f)
-                                        : 1.0f;
-        const glm::vec4 startColor{1.0f, 0.75f, 0.35f, 0.95f};
-        const glm::vec4 endColor{0.2f, 0.4f, 1.0f, 0.0f};
-        const glm::vec4 color = glm::mix(startColor, endColor, normalizedAge);
+        const glm::vec4 startColor = emitter.getStartColor();
+        const glm::vec4 endColor = emitter.getEndColor();
+        const glm::vec4 baseColor = glm::mix(startColor, endColor, normalizedAge);
+        const float alpha = glm::clamp(baseColor.a * (0.25f + 1.05f * hotCore) * flicker * fade, 0.0f, 1.0f);
+        const glm::vec4 color{baseColor.r, baseColor.g, baseColor.b, alpha};
 
-        ParticleVertex v0{center - right + up, {0.0f, 1.0f}, color};
-        ParticleVertex v1{center + right + up, {1.0f, 1.0f}, color};
-        ParticleVertex v2{center + right - up, {1.0f, 0.0f}, color};
-        ParticleVertex v3{center - right - up, {0.0f, 0.0f}, color};
+        if (emitter.renderModeValue() == vkengine::ParticleRenderMode::Mesh) {
+            vkengine::RenderComponent render{};
+            render.mesh = emitter.meshTypeValue();
+            render.meshResource = emitter.meshResourceValue();
+            render.albedoTexture = "__default__";
+            render.baseColor = color;
+            render.opacity = alpha;
 
-        cpuParticleVertices.push_back(v0);
-        cpuParticleVertices.push_back(v2);
-        cpuParticleVertices.push_back(v1);
+            glm::mat4 model{1.0f};
+            model = glm::translate(model, center);
+            model = glm::scale(model, glm::vec3(emitter.meshScaleValue()));
 
-        cpuParticleVertices.push_back(v0);
-        cpuParticleVertices.push_back(v3);
-        cpuParticleVertices.push_back(v2);
+            particleMeshInstances.push_back({model, std::move(render)});
+            return;
+        }
+
+        const float shapeValue = static_cast<float>(emitter.shape());
+        ParticleVertex v0{center - right + up, {0.0f, 1.0f}, color, shapeValue};
+        ParticleVertex v1{center + right + up, {1.0f, 1.0f}, color, shapeValue};
+        ParticleVertex v2{center + right - up, {1.0f, 0.0f}, color, shapeValue};
+        ParticleVertex v3{center - right - up, {0.0f, 0.0f}, color, shapeValue};
+
+        const auto shapeIndex = static_cast<std::size_t>(emitter.shape());
+        if (shapeIndex >= shapeBuckets.size()) {
+            return;
+        }
+        auto& bucket = shapeBuckets[shapeIndex];
+        bucket.push_back(v0);
+        bucket.push_back(v2);
+        bucket.push_back(v1);
+
+        bucket.push_back(v0);
+        bucket.push_back(v3);
+        bucket.push_back(v2);
     });
+
+    uint32_t runningOffset = 0;
+    for (std::size_t i = 0; i < shapeBuckets.size(); ++i) {
+        auto& bucket = shapeBuckets[i];
+        particleDrawRanges[i].offset = runningOffset;
+        particleDrawRanges[i].count = static_cast<uint32_t>(bucket.size());
+        runningOffset += particleDrawRanges[i].count;
+        cpuParticleVertices.insert(cpuParticleVertices.end(), bucket.begin(), bucket.end());
+    }
 
     if (cpuParticleVertices.empty()) {
         return;
@@ -3776,6 +4513,9 @@ void VulkanCubeApp::handleHotkeys(int key, int action)
         animateLight = !animateLight;
         std::cout << "Light animation " << (animateLight ? "enabled" : "disabled") << '\n';
         break;
+    case GLFW_KEY_F5:
+        cycleShaderStyle();
+        break;
     default:
         break;
     }
@@ -3798,9 +4538,28 @@ void VulkanCubeApp::cycleVisualizationMode()
     std::cout << "Shading view: " << kModeLabels[nextIndex] << '\n';
 }
 
+void VulkanCubeApp::cycleShaderStyle()
+{
+    static constexpr const char* kStyleLabels[] = {
+        "Standard",
+        "Toon",
+        "Rim",
+        "Heat",
+        "Gradient",
+        "Wireframe",
+        "Glow"
+    };
+    constexpr uint32_t styleCount = static_cast<uint32_t>(sizeof(kStyleLabels) / sizeof(kStyleLabels[0]));
+
+    const uint32_t nextIndex = (static_cast<uint32_t>(shaderStyle) + 1u) % styleCount;
+    shaderStyle = static_cast<ShaderStyle>(nextIndex);
+
+    std::cout << "Shader style: " << kStyleLabels[nextIndex] << '\n';
+}
+
 void VulkanCubeApp::printHotkeyHelp() const
 {
-    std::cout << "Hotkeys - F1: cycle shading views, F2: toggle shadows, F3: toggle specular, F4: toggle light animation" << '\n';
+    std::cout << "Hotkeys - F1: cycle shading views, F2: toggle shadows, F3: toggle specular, F4: toggle light animation, F5: cycle shader style" << '\n';
 }
 
 void VulkanCubeApp::setCustomCursorCallback(CursorCallback callback)

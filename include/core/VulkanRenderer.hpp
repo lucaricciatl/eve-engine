@@ -13,7 +13,8 @@
 #include "engine/assets/MeshLoader.hpp"
 #include "engine/assets/TextureLoader.hpp"
 #include "core/sky/Sky.hpp"
-#include "NBodyGpuInterop.hpp"
+#include "core/PipelineLibrary.hpp"
+#include "examples/nbody/NBodyGpuInterop.hpp"
 #include "ui/ImGuiLayer.hpp"
 #include "core/WindowManager.hpp"
 #include "core/Vertex.hpp"
@@ -39,15 +40,21 @@ using ParticleVertex = vkcore::ParticleVertex;
 using WindowConfig = vkcore::WindowConfig;
 using WindowMode = vkcore::WindowMode;
 
-static_assert(sizeof(ParticleVertex) == sizeof(float) * 9, "ParticleVertex layout mismatch");
+static_assert(sizeof(ParticleVertex) == sizeof(float) * 10, "ParticleVertex layout mismatch");
 
 struct alignas(16) CameraBufferObject {
 	glm::mat4 view;
 	glm::mat4 proj;
 	glm::mat4 lightViewProj;
+	glm::mat4 reflectionViewProj;
 	glm::vec4 cameraPosition;
-	glm::vec4 lightPosition;
-	glm::vec4 lightColorIntensity;
+	glm::vec4 reflectionPlane;
+	glm::vec4 lightPositions[4];
+	glm::vec4 lightColors[4];
+	glm::vec4 lightDirections[4];
+	glm::vec4 lightSpotAngles[4];
+	glm::vec4 lightAreaParams[4];
+	glm::vec4 lightParams;
 	glm::vec4 shadingParams;
 	glm::vec4 fogColor;
 	glm::vec4 fogParams;
@@ -104,7 +111,33 @@ public:
 	void setFogHeightOffset(float offset) noexcept { fogSettings.heightOffset = offset; }
 	void setFogStartDistance(float distance) noexcept { fogSettings.startDistance = distance; }
 	[[nodiscard]] const FogSettings& getFogSettings() const noexcept { return fogSettings; }
+
+	struct ConsoleSettings {
+		bool enabled{false};
+		bool autoScroll{true};
+		int maxLines{200};
+	};
+
+	void setConsoleEnabled(bool enabled) noexcept { console.enabled = enabled; }
+	void setConsoleAutoScroll(bool enabled) noexcept { console.autoScroll = enabled; }
+	void setConsoleMaxLines(int lines) noexcept { console.maxLines = std::max(10, lines); }
+	void addConsoleLine(std::string line);
+	void setConsolePrompt(std::string prompt) { console.prompt = std::move(prompt); }
+
+	enum class ShaderStyle : uint32_t {
+		Standard = 0,
+		Toon = 1,
+		Rim = 2,
+		Heat = 3,
+		Gradient = 4,
+		Wireframe = 5,
+		Glow = 6
+	};
+
+	void setShaderStyle(ShaderStyle style) noexcept { shaderStyle = style; }
+	[[nodiscard]] ShaderStyle getShaderStyle() const noexcept { return shaderStyle; }
 	bool renderSingleFrameToJpeg(const std::filesystem::path& outputPath);
+	bool renderFrameToJpegAt(const std::filesystem::path& outputPath, uint32_t targetFrame, float fixedDeltaSeconds = 1.0f / 30.0f);
 	void setSceneControlsEnabled(bool enabled) noexcept { sceneControlsEnabled = enabled; }
 	[[nodiscard]] const WindowConfig& getWindowConfig() const noexcept { return windowConfig; }
 	[[nodiscard]] vkcore::WindowManager& windowController() noexcept { return windowManager; }
@@ -139,10 +172,13 @@ private:
 	void createImageViews();
 	void createRenderPass();
 	void createShadowRenderPass();
+	void createReflectionRenderPass();
 	void createDescriptorSetLayout();
 	void createPipelines();
 	void createDepthResources();
 	void createShadowResources();
+	void createReflectionResources();
+	void destroyReflectionResources();
 	void destroyShadowResources();
 	void createFramebuffers();
 	void createCommandPool();
@@ -155,6 +191,7 @@ private:
 	void createDescriptorSets();
 	void createMaterialResources();
 	void destroyMaterialResources();
+	void destroyColorTextureCache();
 	void destroyMeshCache();
 	void destroyTextureCache();
 	void destroyTextureResource(TextureResource& texture);
@@ -175,12 +212,20 @@ private:
 	void captureSwapchainImage(VkCommandBuffer commandBuffer, uint32_t imageIndex);
 	void finalizeCapture(uint32_t imageIndex);
 	void updateUniformBuffer(uint32_t currentImage);
+	void populateCameraBufferObject(const vkengine::Camera& camera,
+								const glm::mat4& view,
+								const glm::mat4& proj,
+								const glm::vec3& cameraPosition,
+								const glm::mat4& reflectionViewProj,
+								const glm::vec4& reflectionPlane,
+								CameraBufferObject& ubo);
 	void updateParticleVertexBuffer(float deltaSeconds);
 	void ensureCaptureBuffer(uint32_t width, uint32_t height);
 	void drawFrame();
 	void handleCameraInput(float deltaSeconds);
 	void handleHotkeys(int key, int action);
 	void cycleVisualizationMode();
+	void cycleShaderStyle();
 	void printHotkeyHelp() const;
 
 	uint32_t findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties) const;
@@ -212,6 +257,8 @@ private:
 
 	MeshGpuBuffers& getOrCreateMesh(const vkengine::RenderComponent& renderComponent);
 	TextureResource& getOrCreateTexture(const vkengine::RenderComponent& renderComponent);
+	TextureResource& getOrCreateColorTexture(const glm::vec4& color);
+	bool shouldUseColorTexture(const vkengine::RenderComponent& renderComponent) const;
 	void uploadMeshToGpu(const std::string& cacheKey, const vkengine::MeshData& meshData);
 	void uploadTextureToGpu(const std::string& cacheKey, const vkengine::TextureData& textureData, TextureResource& outTexture);
 	VkDescriptorSet allocateMaterialDescriptor();
@@ -295,6 +342,7 @@ private:
 
 	VkRenderPass renderPass = VK_NULL_HANDLE;
 	VkRenderPass shadowRenderPass = VK_NULL_HANDLE;
+	VkRenderPass reflectionRenderPass = VK_NULL_HANDLE;
 	VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
 	VkDescriptorSetLayout materialDescriptorSetLayout = VK_NULL_HANDLE;
 	VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
@@ -302,6 +350,7 @@ private:
 	VkPipeline linePipeline = VK_NULL_HANDLE;
 	VkPipeline shadowPipeline = VK_NULL_HANDLE;
 	VkPipeline particlePipeline = VK_NULL_HANDLE;
+	std::vector<VkPipeline> stylePipelines;
 	VkImage depthImage = VK_NULL_HANDLE;
 	VkDeviceMemory depthImageMemory = VK_NULL_HANDLE;
 	VkImageView depthImageView = VK_NULL_HANDLE;
@@ -311,6 +360,15 @@ private:
 	VkFramebuffer shadowFramebuffer = VK_NULL_HANDLE;
 	VkSampler shadowSampler = VK_NULL_HANDLE;
 	bool shadowImageReady = false;
+	VkImage reflectionColorImage = VK_NULL_HANDLE;
+	VkDeviceMemory reflectionColorMemory = VK_NULL_HANDLE;
+	VkImageView reflectionColorView = VK_NULL_HANDLE;
+	VkImage reflectionDepthImage = VK_NULL_HANDLE;
+	VkDeviceMemory reflectionDepthMemory = VK_NULL_HANDLE;
+	VkImageView reflectionDepthView = VK_NULL_HANDLE;
+	VkFramebuffer reflectionFramebuffer = VK_NULL_HANDLE;
+	TextureResource reflectionTexture{};
+	bool reflectionImageReady = false;
 
 	VkCommandPool commandPool = VK_NULL_HANDLE;
 	std::vector<VkCommandBuffer> commandBuffers;
@@ -328,17 +386,32 @@ private:
 	VkDeviceSize particleVertexCapacity = 0;
 	uint32_t particleVertexCount = 0;
 	std::vector<ParticleVertex> cpuParticleVertices;
+	struct ParticleDrawRange {
+		uint32_t offset = 0;
+		uint32_t count = 0;
+	};
+	std::array<ParticleDrawRange, vkengine::kParticleShapeCount> particleDrawRanges{};
+	struct ParticleMeshInstance {
+		glm::mat4 model;
+		vkengine::RenderComponent render;
+	};
+	std::vector<ParticleMeshInstance> particleMeshInstances;
 	bool particleBufferNeedsStorage = false;
 
 	std::vector<VkBuffer> uniformBuffers;
 	std::vector<VkDeviceMemory> uniformBuffersMemory;
 	std::vector<void*> uniformBuffersMapped;
+	std::vector<VkBuffer> reflectionUniformBuffers;
+	std::vector<VkDeviceMemory> reflectionUniformBuffersMemory;
+	std::vector<void*> reflectionUniformBuffersMapped;
 
 	VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
 	std::vector<VkDescriptorSet> descriptorSets;
+	std::vector<VkDescriptorSet> reflectionDescriptorSets;
 	VkDescriptorPool materialDescriptorPool = VK_NULL_HANDLE;
 	VkSampler materialSampler = VK_NULL_HANDLE;
 	TextureResource defaultTexture{};
+	std::unordered_map<uint32_t, TextureResource> colorTextureCache;
 
 	std::vector<VkSemaphore> imageAvailableSemaphores;
 	std::vector<VkSemaphore> renderFinishedSemaphores;
@@ -366,6 +439,13 @@ private:
 	bool shadowsEnabled = true;
 	bool specularEnabled = true;
 	bool animateLight = true;
+	ShaderStyle shaderStyle = ShaderStyle::Standard;
+	glm::mat4 cachedReflectionView{1.0f};
+	glm::mat4 cachedReflectionProj{1.0f};
+	glm::mat4 cachedReflectionViewProj{1.0f};
+	glm::vec4 cachedReflectionPlane{0.0f, 1.0f, 0.0f, 0.0f};
+	glm::vec3 cachedReflectionCameraPosition{0.0f};
+	bool mirrorAvailable{false};
 
 	vkui::ImGuiLayer uiLayer{};
 	bool uiEnabled{true};
@@ -375,6 +455,15 @@ private:
 	float smoothedFps{0.0f};
 	std::function<void(float)> customUi{};
 	FogSettings fogSettings{};
+	struct ConsoleState {
+		bool enabled{false};
+		bool autoScroll{true};
+		int maxLines{200};
+		std::string prompt{"command"};
+		std::string input{};
+		std::vector<std::string> lines;
+		bool scrollToBottom{false};
+	} console{};
 
 	vkengine::IGameEngine* engine = nullptr;
 	vkengine::InputManager inputManager{};
