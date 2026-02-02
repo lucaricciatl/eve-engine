@@ -26,9 +26,6 @@
 #include <thread>
 #include <vector>
 
-#include <imgui.h>
-#include <misc/cpp/imgui_stdlib.h>
-
 #ifndef SHADER_BINARY_DIR
 #define SHADER_BINARY_DIR ""
 #endif
@@ -163,50 +160,6 @@ const std::vector<Vertex> LINE_VERTICES = {
     {{-0.5f, 0.5f, 0.5f}, {1.0f, 1.0f, 1.0f, 1.0f}, {}, {}},
 };
 
-constexpr uint32_t N_BODY_WORKGROUP_SIZE = 256;
-constexpr uint32_t BILLBOARD_WORKGROUP_SIZE = 256;
-constexpr uint32_t VERTICES_PER_PARTICLE = 6;
-constexpr uint32_t PARTICLE_VERTEX_FLOATS = 10;
-
-struct alignas(16) NBodyComputePushConstants {
-    float deltaTime;
-    float gravityConstant;
-    float softening;
-    float damping;
-    float colorCycle;
-    float centerPull;
-    float centerRadius;
-    float confinementFalloff;
-    float maxVelocity;
-    float maxDistance;
-    uint32_t particleCount;
-    float padding;
-};
-
-struct alignas(16) BillboardPushConstants {
-    glm::vec4 cameraRight;
-    glm::vec4 cameraUp;
-    glm::vec4 startColor;
-    glm::vec4 endColor;
-    float particleScale;
-    float colorCycle;
-    uint32_t particleCount;
-    float padding;
-};
-
-std::vector<char> readFile(const std::filesystem::path& filename)
-{
-    std::ifstream file(filename, std::ios::ate | std::ios::binary);
-    if (!file.is_open()) {
-        throw std::runtime_error("Failed to open file " + filename.string());
-    }
-    const size_t fileSize = static_cast<size_t>(file.tellg());
-    std::vector<char> buffer(fileSize);
-    file.seekg(0);
-    file.read(buffer.data(), fileSize);
-    return buffer;
-}
-
 std::string makeMeshCacheKey(const std::string& path)
 {
     return path;
@@ -214,14 +167,14 @@ std::string makeMeshCacheKey(const std::string& path)
 
 } // namespace
 
-VulkanCubeApp::VulkanCubeApp(vkengine::IGameEngine& engineRef)
+VulkanRenderer::VulkanRenderer(vkengine::IGameEngine& engineRef)
     : startTime(std::chrono::steady_clock::now())
     , lastFrameTime(startTime)
 {
     attachEngine(engineRef);
 }
 
-void VulkanCubeApp::attachEngine(vkengine::IGameEngine& engineRef)
+void VulkanRenderer::attachEngine(vkengine::IGameEngine& engineRef)
 {
     engine = &engineRef;
     inputManager.attachRegistry(&engine->scene().registry());
@@ -232,7 +185,7 @@ void VulkanCubeApp::attachEngine(vkengine::IGameEngine& engineRef)
     }
 }
 
-void VulkanCubeApp::setWindowConfig(const WindowConfig& config)
+void VulkanRenderer::setWindowConfig(const WindowConfig& config)
 {
     windowConfig = config;
     if (windowConfig.mode == WindowMode::FixedSize) {
@@ -240,29 +193,29 @@ void VulkanCubeApp::setWindowConfig(const WindowConfig& config)
     }
 }
 
-void VulkanCubeApp::setWindowMode(WindowMode mode)
+void VulkanRenderer::setWindowMode(WindowMode mode)
 {
     windowManager.setMode(mode);
     windowConfig = windowManager.getConfig();
 }
 
-void VulkanCubeApp::setWindowOpacity(float opacity)
+void VulkanRenderer::setWindowOpacity(float opacity)
 {
     windowManager.setOpacity(opacity);
     windowConfig = windowManager.getConfig();
 }
 
-void VulkanCubeApp::setSkyColor(const glm::vec3& color)
+void VulkanRenderer::setSkyColor(const glm::vec3& color)
 {
     skySettings.color = glm::vec4{color, 1.0f};
 }
 
-void VulkanCubeApp::setSkyColor(const glm::vec4& color)
+void VulkanRenderer::setSkyColor(const glm::vec4& color)
 {
     skySettings.color = color;
 }
 
-bool VulkanCubeApp::setSkyFromFile(const std::filesystem::path& path)
+bool VulkanRenderer::setSkyFromFile(const std::filesystem::path& path)
 {
     try {
         const auto resolved = resolveAssetPath(path.string());
@@ -286,13 +239,13 @@ bool VulkanCubeApp::setSkyFromFile(const std::filesystem::path& path)
     }
 }
 
-void VulkanCubeApp::requestExit()
+void VulkanRenderer::requestExit()
 {
     exitRequested.store(true);
     windowManager.requestClose();
 }
 
-void VulkanCubeApp::run()
+void VulkanRenderer::run()
 {
     if (engine == nullptr) {
         throw std::runtime_error("Renderer requires an engine before running");
@@ -304,7 +257,7 @@ void VulkanCubeApp::run()
     cleanup();
 }
 
-bool VulkanCubeApp::renderSingleFrameToJpeg(const std::filesystem::path& outputPath)
+bool VulkanRenderer::renderSingleFrameToJpeg(const std::filesystem::path& outputPath)
 {
     if (engine == nullptr) {
         throw std::runtime_error("Renderer has no engine attached");
@@ -326,7 +279,7 @@ bool VulkanCubeApp::renderSingleFrameToJpeg(const std::filesystem::path& outputP
     return captureCompleted && !captureFailed;
 }
 
-bool VulkanCubeApp::renderFrameToJpegAt(const std::filesystem::path& outputPath, uint32_t targetFrame, float fixedDeltaSeconds)
+bool VulkanRenderer::renderFrameToJpegAt(const std::filesystem::path& outputPath, uint32_t targetFrame, float fixedDeltaSeconds)
 {
     if (engine == nullptr) {
         throw std::runtime_error("Renderer has no engine attached");
@@ -364,7 +317,7 @@ bool VulkanCubeApp::renderFrameToJpegAt(const std::filesystem::path& outputPath,
     return captureCompleted && !captureFailed;
 }
 
-void VulkanCubeApp::initWindow()
+void VulkanRenderer::initWindow()
 {
     if (windowConfig.width == 0) {
         windowConfig.width = WIDTH;
@@ -382,7 +335,7 @@ void VulkanCubeApp::initWindow()
     printHotkeyHelp();
 }
 
-void VulkanCubeApp::initVulkan()
+void VulkanRenderer::initVulkan()
 {
     createInstance();
     setupDebugMessenger();
@@ -412,10 +365,9 @@ void VulkanCubeApp::initVulkan()
     initUi();
     createCommandBuffers();
     createSyncObjects();
-    initializeGpuNBodyContext();
 }
 
-void VulkanCubeApp::mainLoop()
+void VulkanRenderer::mainLoop()
 {
     constexpr float TARGET_FPS = 30.0f;
     const auto targetFrameDuration = std::chrono::duration<float>(1.0f / TARGET_FPS);
@@ -437,7 +389,7 @@ void VulkanCubeApp::mainLoop()
     vkDeviceWaitIdle(device);
 }
 
-void VulkanCubeApp::cleanup()
+void VulkanRenderer::cleanup()
 {
     if (device != VK_NULL_HANDLE) {
         vkDeviceWaitIdle(device);
@@ -479,7 +431,6 @@ void VulkanCubeApp::cleanup()
     destroyDeformableBuffers();
     destroyMeshCache();
 
-    destroyGpuNBodyContext();
     destroyParticleBuffers();
     destroyCaptureResources();
     destroyMaterialResources();
@@ -518,7 +469,7 @@ void VulkanCubeApp::cleanup()
     exitRequested.store(false);
 }
 
-void VulkanCubeApp::recreateSwapChain()
+void VulkanRenderer::recreateSwapChain()
 {
     int width = 0, height = 0;
     glfwGetFramebufferSize(window, &width, &height);
@@ -550,7 +501,7 @@ void VulkanCubeApp::recreateSwapChain()
     allocateRenderFinishedSemaphores();
 }
 
-void VulkanCubeApp::cleanupSwapChain()
+void VulkanRenderer::cleanupSwapChain()
 {
     if (device != VK_NULL_HANDLE) {
         vkDeviceWaitIdle(device);
@@ -661,7 +612,7 @@ void VulkanCubeApp::cleanupSwapChain()
     }
 }
 
-void VulkanCubeApp::createInstance()
+void VulkanRenderer::createInstance()
 {
     if (enableValidationLayers && !checkValidationLayerSupport()) {
         throw std::runtime_error("Validation layers requested, but not available");
@@ -707,7 +658,7 @@ void VulkanCubeApp::createInstance()
     }
 }
 
-void VulkanCubeApp::setupDebugMessenger()
+void VulkanRenderer::setupDebugMessenger()
 {
     if (!enableValidationLayers) {
         return;
@@ -727,14 +678,14 @@ void VulkanCubeApp::setupDebugMessenger()
     }
 }
 
-void VulkanCubeApp::createSurface()
+void VulkanRenderer::createSurface()
 {
     if (glfwCreateWindowSurface(instance, window, nullptr, &surface) != VK_SUCCESS) {
         throw std::runtime_error("Failed to create window surface");
     }
 }
 
-void VulkanCubeApp::pickPhysicalDevice()
+void VulkanRenderer::pickPhysicalDevice()
 {
     uint32_t deviceCount = 0;
     vkEnumeratePhysicalDevices(instance, &deviceCount, nullptr);
@@ -757,7 +708,7 @@ void VulkanCubeApp::pickPhysicalDevice()
     }
 }
 
-void VulkanCubeApp::createLogicalDevice()
+void VulkanRenderer::createLogicalDevice()
 {
     QueueFamilyIndices indices = findQueueFamilies(physicalDevice);
 
@@ -799,7 +750,7 @@ void VulkanCubeApp::createLogicalDevice()
     vkGetDeviceQueue(device, indices.presentFamily.value(), 0, &presentQueue);
 }
 
-void VulkanCubeApp::createSwapChain()
+void VulkanRenderer::createSwapChain()
 {
     SwapChainSupportDetails swapChainSupport = querySwapChainSupport(physicalDevice);
 
@@ -854,7 +805,7 @@ void VulkanCubeApp::createSwapChain()
     swapChainExtent = extent;
 }
 
-void VulkanCubeApp::createImageViews()
+void VulkanRenderer::createImageViews()
 {
     swapChainImageViews.resize(swapChainImages.size());
 
@@ -863,7 +814,7 @@ void VulkanCubeApp::createImageViews()
     }
 }
 
-void VulkanCubeApp::createRenderPass()
+void VulkanRenderer::createRenderPass()
 {
     VkAttachmentDescription colorAttachment{};
     colorAttachment.format = swapChainImageFormat;
@@ -923,7 +874,7 @@ void VulkanCubeApp::createRenderPass()
     }
 }
 
-void VulkanCubeApp::createShadowRenderPass()
+void VulkanRenderer::createShadowRenderPass()
 {
     VkAttachmentDescription depthAttachment{};
     depthAttachment.format = findDepthFormat();
@@ -966,7 +917,7 @@ void VulkanCubeApp::createShadowRenderPass()
     }
 }
 
-void VulkanCubeApp::createReflectionRenderPass()
+void VulkanRenderer::createReflectionRenderPass()
 {
     VkAttachmentDescription colorAttachment{};
     colorAttachment.format = swapChainImageFormat;
@@ -1026,7 +977,7 @@ void VulkanCubeApp::createReflectionRenderPass()
     }
 }
 
-void VulkanCubeApp::createReflectionResources()
+void VulkanRenderer::createReflectionResources()
 {
     destroyReflectionResources();
 
@@ -1071,7 +1022,7 @@ void VulkanCubeApp::createReflectionResources()
     reflectionImageReady = false;
 }
 
-void VulkanCubeApp::destroyReflectionResources()
+void VulkanRenderer::destroyReflectionResources()
 {
     if (reflectionFramebuffer != VK_NULL_HANDLE) {
         vkDestroyFramebuffer(device, reflectionFramebuffer, nullptr);
@@ -1109,7 +1060,7 @@ void VulkanCubeApp::destroyReflectionResources()
     reflectionImageReady = false;
 }
 
-void VulkanCubeApp::createDescriptorSetLayout()
+void VulkanRenderer::createDescriptorSetLayout()
 {
     VkDescriptorSetLayoutBinding uboLayoutBinding{};
     uboLayoutBinding.binding = 0;
@@ -1153,7 +1104,7 @@ void VulkanCubeApp::createDescriptorSetLayout()
     }
 }
 
-void VulkanCubeApp::createPipelines()
+void VulkanRenderer::createPipelines()
 {
     vkcore::CubePipelineInputs inputs{};
     inputs.device = device;
@@ -1173,7 +1124,7 @@ void VulkanCubeApp::createPipelines()
     particlePipeline = pipelines.particlePipeline;
 }
 
-void VulkanCubeApp::createDepthResources()
+void VulkanRenderer::createDepthResources()
 {
     VkFormat depthFormat = findDepthFormat();
 
@@ -1186,7 +1137,7 @@ void VulkanCubeApp::createDepthResources()
     depthImageView = createImageView(depthImage, depthFormat, VK_IMAGE_ASPECT_DEPTH_BIT);
 }
 
-void VulkanCubeApp::createShadowResources()
+void VulkanRenderer::createShadowResources()
 {
     destroyShadowResources();
 
@@ -1237,7 +1188,7 @@ void VulkanCubeApp::createShadowResources()
     shadowImageReady = false;
 }
 
-void VulkanCubeApp::destroyShadowResources()
+void VulkanRenderer::destroyShadowResources()
 {
     if (shadowSampler != VK_NULL_HANDLE) {
         vkDestroySampler(device, shadowSampler, nullptr);
@@ -1262,7 +1213,7 @@ void VulkanCubeApp::destroyShadowResources()
     shadowImageReady = false;
 }
 
-void VulkanCubeApp::createFramebuffers()
+void VulkanRenderer::createFramebuffers()
 {
     swapChainFramebuffers.resize(swapChainImageViews.size());
 
@@ -1284,7 +1235,7 @@ void VulkanCubeApp::createFramebuffers()
     }
 }
 
-void VulkanCubeApp::createCommandPool()
+void VulkanRenderer::createCommandPool()
 {
     QueueFamilyIndices queueFamilyIndices = findQueueFamilies(physicalDevice);
 
@@ -1298,7 +1249,7 @@ void VulkanCubeApp::createCommandPool()
     }
 }
 
-void VulkanCubeApp::createVertexBuffer()
+void VulkanRenderer::createVertexBuffer()
 {
     VkDeviceSize bufferSize = sizeof(VERTICES[0]) * VERTICES.size();
 
@@ -1324,7 +1275,7 @@ void VulkanCubeApp::createVertexBuffer()
     vkFreeMemory(device, stagingBufferMemory, nullptr);
 }
 
-void VulkanCubeApp::createLineVertexBuffer()
+void VulkanRenderer::createLineVertexBuffer()
 {
     VkDeviceSize bufferSize = sizeof(LINE_VERTICES[0]) * LINE_VERTICES.size();
 
@@ -1350,7 +1301,7 @@ void VulkanCubeApp::createLineVertexBuffer()
     vkFreeMemory(device, stagingBufferMemory, nullptr);
 }
 
-void VulkanCubeApp::createIndexBuffer()
+void VulkanRenderer::createIndexBuffer()
 {
     VkDeviceSize bufferSize = sizeof(INDICES[0]) * INDICES.size();
 
@@ -1376,7 +1327,7 @@ void VulkanCubeApp::createIndexBuffer()
     vkFreeMemory(device, stagingBufferMemory, nullptr);
 }
 
-void VulkanCubeApp::ensureDeformableBuffers(VkDeviceSize vertexBufferSize, VkDeviceSize indexBufferSize)
+void VulkanRenderer::ensureDeformableBuffers(VkDeviceSize vertexBufferSize, VkDeviceSize indexBufferSize)
 {
     if (vertexBufferSize == 0 || indexBufferSize == 0) {
         return;
@@ -1411,7 +1362,7 @@ void VulkanCubeApp::ensureDeformableBuffers(VkDeviceSize vertexBufferSize, VkDev
     }
 }
 
-void VulkanCubeApp::createUniformBuffers()
+void VulkanRenderer::createUniformBuffers()
 {
     VkDeviceSize bufferSize = sizeof(CameraBufferObject);
 
@@ -1435,7 +1386,7 @@ void VulkanCubeApp::createUniformBuffers()
     }
 }
 
-void VulkanCubeApp::createDescriptorPool()
+void VulkanRenderer::createDescriptorPool()
 {
     std::array<VkDescriptorPoolSize, 2> poolSizes{};
     poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
@@ -1454,7 +1405,7 @@ void VulkanCubeApp::createDescriptorPool()
     }
 }
 
-void VulkanCubeApp::createDescriptorSets()
+void VulkanRenderer::createDescriptorSets()
 {
     std::vector<VkDescriptorSetLayout> layouts(swapChainImages.size(), descriptorSetLayout);
     VkDescriptorSetAllocateInfo allocInfo{};
@@ -1533,7 +1484,7 @@ void VulkanCubeApp::createDescriptorSets()
     }
 }
 
-void VulkanCubeApp::createMaterialDescriptorPool()
+void VulkanRenderer::createMaterialDescriptorPool()
 {
     if (materialDescriptorPool != VK_NULL_HANDLE) {
         return;
@@ -1555,7 +1506,7 @@ void VulkanCubeApp::createMaterialDescriptorPool()
     }
 }
 
-void VulkanCubeApp::createMaterialResources()
+void VulkanRenderer::createMaterialResources()
 {
     if (materialSampler == VK_NULL_HANDLE) {
         VkSamplerCreateInfo samplerInfo{};
@@ -1586,7 +1537,7 @@ void VulkanCubeApp::createMaterialResources()
     }
 }
 
-void VulkanCubeApp::destroyTextureResource(TextureResource& texture)
+void VulkanRenderer::destroyTextureResource(TextureResource& texture)
 {
     if (texture.descriptorSet != VK_NULL_HANDLE && materialDescriptorPool != VK_NULL_HANDLE) {
         vkFreeDescriptorSets(device, materialDescriptorPool, 1, &texture.descriptorSet);
@@ -1608,7 +1559,7 @@ void VulkanCubeApp::destroyTextureResource(TextureResource& texture)
     texture.height = 0;
 }
 
-void VulkanCubeApp::destroyTextureCache()
+void VulkanRenderer::destroyTextureCache()
 {
     for (auto& [_, resource] : textureCache) {
         destroyTextureResource(resource);
@@ -1616,7 +1567,7 @@ void VulkanCubeApp::destroyTextureCache()
     textureCache.clear();
 }
 
-void VulkanCubeApp::destroyColorTextureCache()
+void VulkanRenderer::destroyColorTextureCache()
 {
     for (auto& [_, resource] : colorTextureCache) {
         destroyTextureResource(resource);
@@ -1624,7 +1575,7 @@ void VulkanCubeApp::destroyColorTextureCache()
     colorTextureCache.clear();
 }
 
-void VulkanCubeApp::destroyMeshCache()
+void VulkanRenderer::destroyMeshCache()
 {
     for (auto& [_, buffers] : meshCache) {
         if (buffers.vertexBuffer != VK_NULL_HANDLE) {
@@ -1647,7 +1598,7 @@ void VulkanCubeApp::destroyMeshCache()
     meshCache.clear();
 }
 
-void VulkanCubeApp::destroyMaterialResources()
+void VulkanRenderer::destroyMaterialResources()
 {
     destroyTextureCache();
     destroyColorTextureCache();
@@ -1664,7 +1615,7 @@ void VulkanCubeApp::destroyMaterialResources()
     }
 }
 
-void VulkanCubeApp::createDefaultTexture()
+void VulkanRenderer::createDefaultTexture()
 {
     vkengine::TextureData data{};
     data.width = 1;
@@ -1674,7 +1625,7 @@ void VulkanCubeApp::createDefaultTexture()
     uploadTextureToGpu("__default__", data, defaultTexture);
 }
 
-VkDescriptorSet VulkanCubeApp::allocateMaterialDescriptor()
+VkDescriptorSet VulkanRenderer::allocateMaterialDescriptor()
 {
     if (materialDescriptorPool == VK_NULL_HANDLE) {
         throw std::runtime_error("Material descriptor pool not initialized");
@@ -1693,7 +1644,7 @@ VkDescriptorSet VulkanCubeApp::allocateMaterialDescriptor()
     return descriptorSet;
 }
 
-void VulkanCubeApp::writeMaterialDescriptor(VkDescriptorSet descriptorSet, VkImageView imageView)
+void VulkanRenderer::writeMaterialDescriptor(VkDescriptorSet descriptorSet, VkImageView imageView)
 {
     VkDescriptorImageInfo imageInfo{};
     imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -1712,7 +1663,7 @@ void VulkanCubeApp::writeMaterialDescriptor(VkDescriptorSet descriptorSet, VkIma
     vkUpdateDescriptorSets(device, 1, &descriptorWrite, 0, nullptr);
 }
 
-VulkanCubeApp::MeshGpuBuffers& VulkanCubeApp::getOrCreateMesh(const vkengine::RenderComponent& renderComponent)
+VulkanRenderer::MeshGpuBuffers& VulkanRenderer::getOrCreateMesh(const vkengine::RenderComponent& renderComponent)
 {
     if (renderComponent.meshResource.empty()) {
         throw std::runtime_error("RenderComponent missing mesh resource path for custom mesh");
@@ -1730,7 +1681,7 @@ VulkanCubeApp::MeshGpuBuffers& VulkanCubeApp::getOrCreateMesh(const vkengine::Re
     return meshCache.at(cacheKey);
 }
 
-VulkanCubeApp::TextureResource& VulkanCubeApp::getOrCreateTexture(const vkengine::RenderComponent& renderComponent)
+VulkanRenderer::TextureResource& VulkanRenderer::getOrCreateTexture(const vkengine::RenderComponent& renderComponent)
 {
     if (renderComponent.albedoTexture == "__reflection__" && reflectionTexture.view != VK_NULL_HANDLE) {
         return reflectionTexture;
@@ -1762,7 +1713,7 @@ VulkanCubeApp::TextureResource& VulkanCubeApp::getOrCreateTexture(const vkengine
     }
 }
 
-bool VulkanCubeApp::shouldUseColorTexture(const vkengine::RenderComponent& renderComponent) const
+bool VulkanRenderer::shouldUseColorTexture(const vkengine::RenderComponent& renderComponent) const
 {
     if (!renderComponent.albedoTexture.empty()) {
         return false;
@@ -1772,7 +1723,7 @@ bool VulkanCubeApp::shouldUseColorTexture(const vkengine::RenderComponent& rende
     return maxDelta > 0.02f;
 }
 
-VulkanCubeApp::TextureResource& VulkanCubeApp::getOrCreateColorTexture(const glm::vec4& color)
+VulkanRenderer::TextureResource& VulkanRenderer::getOrCreateColorTexture(const glm::vec4& color)
 {
     const glm::vec3 clamped = glm::clamp(glm::vec3(color), glm::vec3(0.0f), glm::vec3(1.0f));
     const auto toByte = [](float value) {
@@ -1799,7 +1750,7 @@ VulkanCubeApp::TextureResource& VulkanCubeApp::getOrCreateColorTexture(const glm
     return texture;
 }
 
-void VulkanCubeApp::uploadMeshToGpu(const std::string& cacheKey, const vkengine::MeshData& meshData)
+void VulkanRenderer::uploadMeshToGpu(const std::string& cacheKey, const vkengine::MeshData& meshData)
 {
     auto& buffers = meshCache[cacheKey];
 
@@ -1880,7 +1831,7 @@ void VulkanCubeApp::uploadMeshToGpu(const std::string& cacheKey, const vkengine:
     buffers.indexCount = static_cast<uint32_t>(meshData.indices.size());
 }
 
-void VulkanCubeApp::uploadTextureToGpu(const std::string& cacheKey, const vkengine::TextureData& textureData, TextureResource& outTexture)
+void VulkanRenderer::uploadTextureToGpu(const std::string& cacheKey, const vkengine::TextureData& textureData, TextureResource& outTexture)
 {
     (void)cacheKey;
     if (textureData.pixels.empty()) {
@@ -1929,7 +1880,7 @@ void VulkanCubeApp::uploadTextureToGpu(const std::string& cacheKey, const vkengi
     writeMaterialDescriptor(outTexture.descriptorSet, outTexture.view);
 }
 
-std::filesystem::path VulkanCubeApp::resolveAssetPath(const std::string& relativePath) const
+std::filesystem::path VulkanRenderer::resolveAssetPath(const std::string& relativePath) const
 {
     if (relativePath.empty()) {
         return {};
@@ -1963,7 +1914,7 @@ std::filesystem::path VulkanCubeApp::resolveAssetPath(const std::string& relativ
     return projectRootPath.empty() ? requested : (projectRootPath / requested);
 }
 
-void VulkanCubeApp::createCommandBuffers()
+void VulkanRenderer::createCommandBuffers()
 {
     commandBuffers.resize(swapChainFramebuffers.size());
 
@@ -1978,7 +1929,7 @@ void VulkanCubeApp::createCommandBuffers()
     }
 }
 
-void VulkanCubeApp::createSyncObjects()
+void VulkanRenderer::createSyncObjects()
 {
     imageAvailableSemaphores.resize(MAX_FRAMES_IN_FLIGHT);
     inFlightFences.resize(MAX_FRAMES_IN_FLIGHT);
@@ -2001,7 +1952,7 @@ void VulkanCubeApp::createSyncObjects()
     allocateRenderFinishedSemaphores();
 }
 
-void VulkanCubeApp::allocateRenderFinishedSemaphores()
+void VulkanRenderer::allocateRenderFinishedSemaphores()
 {
     destroyRenderFinishedSemaphores();
 
@@ -2020,7 +1971,7 @@ void VulkanCubeApp::allocateRenderFinishedSemaphores()
     }
 }
 
-void VulkanCubeApp::destroyRenderFinishedSemaphores()
+void VulkanRenderer::destroyRenderFinishedSemaphores()
 {
     for (auto semaphore : renderFinishedSemaphores) {
         if (semaphore != VK_NULL_HANDLE) {
@@ -2030,7 +1981,7 @@ void VulkanCubeApp::destroyRenderFinishedSemaphores()
     renderFinishedSemaphores.clear();
 }
 
-void VulkanCubeApp::destroyDeformableBuffers()
+void VulkanRenderer::destroyDeformableBuffers()
 {
     if (deformableVertexBuffer != VK_NULL_HANDLE) {
         vkDestroyBuffer(device, deformableVertexBuffer, nullptr);
@@ -2054,196 +2005,13 @@ void VulkanCubeApp::destroyDeformableBuffers()
     deformableDraws.clear();
 }
 
-void VulkanCubeApp::initUi()
-{
-    if (!uiEnabled || uiLayer.isInitialized()) {
-        return;
-    }
-
-    QueueFamilyIndices indices = findQueueFamilies(physicalDevice);
-    uiLayer.initialize(window, instance, physicalDevice, device,
-                       indices.graphicsFamily.value(), graphicsQueue,
-                       renderPass, static_cast<uint32_t>(swapChainImages.size()),
-                       static_cast<uint32_t>(swapChainImages.size()));
-
-    VkCommandBuffer cmd = beginSingleTimeCommands();
-    uiLayer.uploadFonts(cmd);
-    endSingleTimeCommands(cmd);
-}
-
-void VulkanCubeApp::destroyUi()
-{
-    uiLayer.shutdown(device);
-}
-
-void VulkanCubeApp::rebuildUi()
-{
-    if (!uiLayer.isInitialized()) {
-        return;
-    }
-    uiLayer.onSwapchainRecreated(renderPass,
-                                 static_cast<uint32_t>(swapChainImages.size()),
-                                 static_cast<uint32_t>(swapChainImages.size()));
-    VkCommandBuffer cmd = beginSingleTimeCommands();
-    uiLayer.uploadFonts(cmd);
-    endSingleTimeCommands(cmd);
-}
-
-void VulkanCubeApp::buildUi(float deltaSeconds)
-{
-    if (!uiEnabled || !uiLayer.isInitialized()) {
-        return;
-    }
-
-    if (engine == nullptr) {
-        return;
-    }
-
-    ensureSkyTextureLoaded();
-    if (skyTextureLoaded && skyTextureId != VK_NULL_HANDLE) {
-        ImDrawList* bg = ImGui::GetBackgroundDrawList();
-        const ImVec2 topLeft{0.0f, 0.0f};
-        const ImVec2 bottomRight{static_cast<float>(swapChainExtent.width),
-                                static_cast<float>(swapChainExtent.height)};
-        bg->AddImage(reinterpret_cast<ImTextureID>(skyTextureId), topLeft, bottomRight);
-    }
-
-    ImGui::GetIO().DeltaTime = std::max(0.0001f, deltaSeconds);
-
-    const float fps = (deltaSeconds > 0.0f) ? (1.0f / deltaSeconds) : 0.0f;
-    smoothedFps = smoothedFps * 0.9f + fps * 0.1f;
-
-    if (sceneControlsEnabled) {
-        ImGui::SetNextWindowSize(ImVec2(340.0f, 0.0f), ImGuiCond_FirstUseEver);
-        if (ImGui::Begin("Scene Controls")) {
-            ImGui::Text("FPS: %.1f", smoothedFps);
-            ImGui::Checkbox("Enable shadows", &shadowsEnabled);
-            ImGui::Checkbox("Enable specular", &specularEnabled);
-            ImGui::Checkbox("Animate key light", &animateLight);
-            ImGui::Checkbox("Show ImGui demo", &showUiDemo);
-
-            static const char* kStyleLabels[] = {
-                "Standard",
-                "Toon",
-                "Rim",
-                "Heat",
-                "Gradient",
-                "Wireframe",
-                "Glow"
-            };
-            int styleIndex = static_cast<int>(shaderStyle);
-            if (ImGui::Combo("Shader style", &styleIndex, kStyleLabels, static_cast<int>(IM_ARRAYSIZE(kStyleLabels)))) {
-                shaderStyle = static_cast<ShaderStyle>(styleIndex);
-            }
-
-            auto& camera = engine->scene().camera();
-            float moveSpeed = camera.getMovementSpeed();
-            if (ImGui::SliderFloat("Camera speed", &moveSpeed, 0.5f, 20.0f)) {
-                camera.setMovementSpeed(moveSpeed);
-            }
-
-            ImGui::Separator();
-            auto& physics = engine->physics();
-            glm::vec3 gravity = physics.getGravity();
-            if (ImGui::SliderFloat3("Gravity", &gravity.x, -25.0f, 0.0f, "%.2f")) {
-                physics.setGravity(gravity);
-            }
-
-            if (!engine->scene().lights().empty()) {
-                auto& light = engine->scene().lights().front();
-                glm::vec3 color = light.color();
-                if (ImGui::ColorEdit3("Light color", &color.x)) {
-                    light.setColor(color);
-                }
-                float intensity = light.intensity();
-                if (ImGui::SliderFloat("Light intensity", &intensity, 0.1f, 20.0f, "%.2f")) {
-                    light.setIntensity(intensity);
-                }
-            }
-
-            ImGui::Separator();
-            ImGui::Text("Volumetric Fog");
-            ImGui::Checkbox("Enable fog", &fogSettings.enabled);
-            if (fogSettings.enabled) {
-                ImGui::ColorEdit3("Fog color", &fogSettings.color.x);
-                ImGui::SliderFloat("Fog density", &fogSettings.density, 0.0f, 0.2f, "%.3f");
-                ImGui::SliderFloat("Fog height falloff", &fogSettings.heightFalloff, 0.0f, 1.0f, "%.3f");
-                ImGui::SliderFloat("Fog height offset", &fogSettings.heightOffset, -5.0f, 5.0f, "%.2f");
-                ImGui::SliderFloat("Fog start distance", &fogSettings.startDistance, 0.0f, 10.0f, "%.2f");
-            }
-        }
-        ImGui::End();
-    }
-
-    if (showUiDemo) {
-        ImGui::ShowDemoWindow(&showUiDemo);
-    }
-
-    if (console.enabled) {
-        ImGui::SetNextWindowSize(ImVec2(520.0f, 260.0f), ImGuiCond_FirstUseEver);
-        ImGui::SetNextWindowPos(ImVec2(20.0f, 20.0f), ImGuiCond_FirstUseEver);
-        if (ImGui::Begin("Console", &console.enabled)) {
-            ImGui::Checkbox("Auto-scroll", &console.autoScroll);
-            ImGui::SameLine();
-            if (ImGui::Button("Clear")) {
-                console.lines.clear();
-            }
-
-            ImGui::Separator();
-            ImGui::BeginChild("ConsoleScroll", ImVec2(0, -ImGui::GetFrameHeightWithSpacing() - 6.0f), false, ImGuiWindowFlags_HorizontalScrollbar);
-            for (const auto& line : console.lines) {
-                ImGui::TextUnformatted(line.c_str());
-            }
-            if (console.autoScroll && console.scrollToBottom) {
-                ImGui::SetScrollHereY(1.0f);
-            }
-            console.scrollToBottom = false;
-            ImGui::EndChild();
-
-            ImGui::Separator();
-            const std::string label = console.prompt + ">";
-            ImGui::SetNextItemWidth(-1.0f);
-            if (ImGui::InputText(label.c_str(), &console.input, ImGuiInputTextFlags_EnterReturnsTrue)) {
-                const std::string line = console.input;
-                console.input.clear();
-                if (!line.empty()) {
-                    addConsoleLine(console.prompt + "> " + line);
-                }
-            }
-        }
-        ImGui::End();
-    }
-
-    // Always run any registered custom UI callback (even if no widgets are created here).
-    if (customUi) {
-        customUi(deltaSeconds);
-    }
-}
-
-void VulkanCubeApp::addConsoleLine(std::string line)
-{
-    if (line.empty()) {
-        return;
-    }
-    console.lines.emplace_back(std::move(line));
-    if (static_cast<int>(console.lines.size()) > console.maxLines) {
-        const auto overflow = console.lines.size() - static_cast<size_t>(console.maxLines);
-        console.lines.erase(console.lines.begin(), console.lines.begin() + static_cast<std::ptrdiff_t>(overflow));
-    }
-    console.scrollToBottom = true;
-}
-
-void VulkanCubeApp::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex, float deltaSeconds)
+void VulkanRenderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex, float deltaSeconds)
 {
     VkCommandBufferBeginInfo beginInfo{};
     beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
 
     if (vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS) {
         throw std::runtime_error("Failed to begin recording command buffer");
-    }
-
-    if (nbodyGpu.enabled) {
-        recordNBodyCompute(commandBuffer, deltaSeconds);
     }
 
     auto buildObjectPushConstants = [&](const glm::mat4& modelMatrix, const vkengine::RenderComponent& render) {
@@ -2767,7 +2535,7 @@ void VulkanCubeApp::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t 
     }
 }
 
-void VulkanCubeApp::captureSwapchainImage(VkCommandBuffer commandBuffer, uint32_t imageIndex)
+void VulkanRenderer::captureSwapchainImage(VkCommandBuffer commandBuffer, uint32_t imageIndex)
 {
     if (!captureRequested || imageIndex != captureImageIndex || captureBuffer == VK_NULL_HANDLE) {
         return;
@@ -2838,7 +2606,7 @@ void VulkanCubeApp::captureSwapchainImage(VkCommandBuffer commandBuffer, uint32_
                          1, &toPresent);
 }
 
-void VulkanCubeApp::finalizeCapture(uint32_t imageIndex)
+void VulkanRenderer::finalizeCapture(uint32_t imageIndex)
 {
     if (!captureRequested || imageIndex != captureImageIndex || captureBufferMemory == VK_NULL_HANDLE) {
         return;
@@ -2871,7 +2639,7 @@ void VulkanCubeApp::finalizeCapture(uint32_t imageIndex)
     captureRequested = false;
 }
 
-void VulkanCubeApp::populateCameraBufferObject(const vkengine::Camera& camera,
+void VulkanRenderer::populateCameraBufferObject(const vkengine::Camera& camera,
                                                const glm::mat4& view,
                                                const glm::mat4& proj,
                                                const glm::vec3& cameraPosition,
@@ -2997,7 +2765,7 @@ void VulkanCubeApp::populateCameraBufferObject(const vkengine::Camera& camera,
     ubo.lightViewProj = lightProj * lightView;
 }
 
-void VulkanCubeApp::updateUniformBuffer(uint32_t currentImage)
+void VulkanRenderer::updateUniformBuffer(uint32_t currentImage)
 {
     const auto& scene = engine->scene();
     const auto& camera = scene.camera();
@@ -3078,13 +2846,8 @@ void VulkanCubeApp::updateUniformBuffer(uint32_t currentImage)
     }
 }
 
-void VulkanCubeApp::updateParticleVertexBuffer(float deltaSeconds)
+void VulkanRenderer::updateParticleVertexBuffer(float deltaSeconds)
 {
-    if (nbodyGpu.enabled) {
-        particleVertexCount = static_cast<uint32_t>(nbodyGpu.particleCount) * 6;
-        return;
-    }
-
     particleVertexCount = 0;
     cpuParticleVertices.clear();
     for (auto& range : particleDrawRanges) {
@@ -3184,7 +2947,7 @@ void VulkanCubeApp::updateParticleVertexBuffer(float deltaSeconds)
     particleVertexCount = static_cast<uint32_t>(cpuParticleVertices.size());
 }
 
-void VulkanCubeApp::ensureCaptureBuffer(uint32_t width, uint32_t height)
+void VulkanRenderer::ensureCaptureBuffer(uint32_t width, uint32_t height)
 {
     if (width == 0 || height == 0) {
         return;
@@ -3208,7 +2971,7 @@ void VulkanCubeApp::ensureCaptureBuffer(uint32_t width, uint32_t height)
     captureHeight = height;
 }
 
-void VulkanCubeApp::destroyCaptureResources()
+void VulkanRenderer::destroyCaptureResources()
 {
     if (device == VK_NULL_HANDLE) {
         captureBuffer = VK_NULL_HANDLE;
@@ -3232,457 +2995,7 @@ void VulkanCubeApp::destroyCaptureResources()
     captureHeight = 0;
 }
 
-void VulkanCubeApp::initializeGpuNBodyContext()
-{
-    if (device == VK_NULL_HANDLE || engine == nullptr) {
-        return;
-    }
-
-    auto* provider = dynamic_cast<vkengine::INBodyGpuProvider*>(engine);
-    if (provider == nullptr) {
-        return;
-    }
-
-    const auto& initialStates = provider->gpuInitialStates();
-    if (initialStates.empty()) {
-        return;
-    }
-
-    nbodyGpu.provider = provider;
-    nbodyGpu.params = provider->gpuSimParams();
-    nbodyGpu.particleCount = static_cast<uint32_t>(initialStates.size());
-    nbodyGpu.stateBufferSize = initialStates.size() * sizeof(vkengine::NBodyParticleState);
-    nbodyGpu.currentReadBuffer = 0;
-
-    particleBufferNeedsStorage = true;
-    const VkDeviceSize requiredVertexBytes = static_cast<VkDeviceSize>(nbodyGpu.particleCount) * VERTICES_PER_PARTICLE * sizeof(ParticleVertex);
-    ensureParticleVertexCapacity(requiredVertexBytes);
-
-    createNBodyStateBuffers(nbodyGpu.stateBufferSize, initialStates);
-    createNBodyPipelines();
-    createNBodyDescriptorResources();
-
-    nbodyGpu.enabled = true;
-    particleVertexCount = static_cast<uint32_t>(nbodyGpu.particleCount) * VERTICES_PER_PARTICLE;
-}
-
-void VulkanCubeApp::destroyGpuNBodyContext()
-{
-    if (device == VK_NULL_HANDLE) {
-        nbodyGpu = {};
-        particleBufferNeedsStorage = false;
-        return;
-    }
-
-    destroyNBodyDescriptorResources();
-    destroyNBodyPipelines();
-
-    for (auto& buffer : nbodyGpu.stateBuffers) {
-        if (buffer != VK_NULL_HANDLE) {
-            vkDestroyBuffer(device, buffer, nullptr);
-            buffer = VK_NULL_HANDLE;
-        }
-    }
-    for (auto& memory : nbodyGpu.stateMemory) {
-        if (memory != VK_NULL_HANDLE) {
-            vkFreeMemory(device, memory, nullptr);
-            memory = VK_NULL_HANDLE;
-        }
-    }
-
-    nbodyGpu = {};
-    particleBufferNeedsStorage = false;
-}
-
-void VulkanCubeApp::createNBodyStateBuffers(VkDeviceSize bufferSize, const std::vector<vkengine::NBodyParticleState>& initialStates)
-{
-    if (bufferSize == 0 || initialStates.empty()) {
-        return;
-    }
-
-    VkBuffer stagingBuffer = VK_NULL_HANDLE;
-    VkDeviceMemory stagingMemory = VK_NULL_HANDLE;
-    createBuffer(bufferSize,
-                 VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                 stagingBuffer,
-                 stagingMemory);
-
-    void* data = nullptr;
-    vkMapMemory(device, stagingMemory, 0, bufferSize, 0, &data);
-    std::memcpy(data, initialStates.data(), static_cast<size_t>(bufferSize));
-    vkUnmapMemory(device, stagingMemory);
-
-    for (int i = 0; i < 2; ++i) {
-        createBuffer(bufferSize,
-                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                     nbodyGpu.stateBuffers[i],
-                     nbodyGpu.stateMemory[i]);
-        copyBuffer(stagingBuffer, nbodyGpu.stateBuffers[i], bufferSize);
-    }
-
-    vkDestroyBuffer(device, stagingBuffer, nullptr);
-    vkFreeMemory(device, stagingMemory, nullptr);
-}
-
-void VulkanCubeApp::createNBodyPipelines()
-{
-    destroyNBodyPipelines();
-
-    VkDescriptorSetLayoutBinding computeBindings[2]{};
-    computeBindings[0].binding = 0;
-    computeBindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    computeBindings[0].descriptorCount = 1;
-    computeBindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-    computeBindings[1] = computeBindings[0];
-    computeBindings[1].binding = 1;
-
-    VkDescriptorSetLayoutCreateInfo layoutInfo{};
-    layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.bindingCount = 2;
-    layoutInfo.pBindings = computeBindings;
-    if (vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &nbodyGpu.computeSetLayout) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to create N-body compute descriptor set layout");
-    }
-
-    VkPushConstantRange computePushRange{};
-    computePushRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-    computePushRange.offset = 0;
-    computePushRange.size = sizeof(NBodyComputePushConstants);
-
-    VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
-    pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    pipelineLayoutInfo.setLayoutCount = 1;
-    pipelineLayoutInfo.pSetLayouts = &nbodyGpu.computeSetLayout;
-    pipelineLayoutInfo.pushConstantRangeCount = 1;
-    pipelineLayoutInfo.pPushConstantRanges = &computePushRange;
-    if (vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &nbodyGpu.computePipelineLayout) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to create N-body compute pipeline layout");
-    }
-
-    auto shaderDir = std::filesystem::path(SHADER_BINARY_DIR);
-    auto computeCode = readFile(shaderDir / "nbody.comp.spv");
-    VkShaderModule computeModule = createShaderModule(computeCode);
-
-    VkPipelineShaderStageCreateInfo stageInfo{};
-    stageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    stageInfo.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-    stageInfo.module = computeModule;
-    stageInfo.pName = "main";
-
-    VkComputePipelineCreateInfo computeInfo{};
-    computeInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-    computeInfo.stage = stageInfo;
-    computeInfo.layout = nbodyGpu.computePipelineLayout;
-    if (vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &computeInfo, nullptr, &nbodyGpu.computePipeline) != VK_SUCCESS) {
-        vkDestroyShaderModule(device, computeModule, nullptr);
-        throw std::runtime_error("Failed to create N-body compute pipeline");
-    }
-    vkDestroyShaderModule(device, computeModule, nullptr);
-
-    VkDescriptorSetLayoutBinding billboardBindings[2]{};
-    billboardBindings[0].binding = 0;
-    billboardBindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    billboardBindings[0].descriptorCount = 1;
-    billboardBindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-    billboardBindings[1] = billboardBindings[0];
-    billboardBindings[1].binding = 1;
-
-    VkDescriptorSetLayoutCreateInfo billboardLayoutInfo{};
-    billboardLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    billboardLayoutInfo.bindingCount = 2;
-    billboardLayoutInfo.pBindings = billboardBindings;
-    if (vkCreateDescriptorSetLayout(device, &billboardLayoutInfo, nullptr, &nbodyGpu.billboardSetLayout) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to create billboard descriptor set layout");
-    }
-
-    VkPushConstantRange billboardPushRange{};
-    billboardPushRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-    billboardPushRange.offset = 0;
-    billboardPushRange.size = sizeof(BillboardPushConstants);
-
-    VkPipelineLayoutCreateInfo billboardPipelineLayoutInfo{};
-    billboardPipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    billboardPipelineLayoutInfo.setLayoutCount = 1;
-    billboardPipelineLayoutInfo.pSetLayouts = &nbodyGpu.billboardSetLayout;
-    billboardPipelineLayoutInfo.pushConstantRangeCount = 1;
-    billboardPipelineLayoutInfo.pPushConstantRanges = &billboardPushRange;
-    if (vkCreatePipelineLayout(device, &billboardPipelineLayoutInfo, nullptr, &nbodyGpu.billboardPipelineLayout) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to create billboard pipeline layout");
-    }
-
-    auto billboardCode = readFile(shaderDir / "particle_billboard.comp.spv");
-    VkShaderModule billboardModule = createShaderModule(billboardCode);
-
-    VkPipelineShaderStageCreateInfo billboardStage{};
-    billboardStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    billboardStage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-    billboardStage.module = billboardModule;
-    billboardStage.pName = "main";
-
-    VkComputePipelineCreateInfo billboardInfo{};
-    billboardInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-    billboardInfo.stage = billboardStage;
-    billboardInfo.layout = nbodyGpu.billboardPipelineLayout;
-    if (vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &billboardInfo, nullptr, &nbodyGpu.billboardPipeline) != VK_SUCCESS) {
-        vkDestroyShaderModule(device, billboardModule, nullptr);
-        throw std::runtime_error("Failed to create billboard compute pipeline");
-    }
-    vkDestroyShaderModule(device, billboardModule, nullptr);
-}
-
-void VulkanCubeApp::destroyNBodyPipelines()
-{
-    if (device == VK_NULL_HANDLE) {
-        return;
-    }
-
-    if (nbodyGpu.computePipeline != VK_NULL_HANDLE) {
-        vkDestroyPipeline(device, nbodyGpu.computePipeline, nullptr);
-        nbodyGpu.computePipeline = VK_NULL_HANDLE;
-    }
-    if (nbodyGpu.computePipelineLayout != VK_NULL_HANDLE) {
-        vkDestroyPipelineLayout(device, nbodyGpu.computePipelineLayout, nullptr);
-        nbodyGpu.computePipelineLayout = VK_NULL_HANDLE;
-    }
-    if (nbodyGpu.computeSetLayout != VK_NULL_HANDLE) {
-        vkDestroyDescriptorSetLayout(device, nbodyGpu.computeSetLayout, nullptr);
-        nbodyGpu.computeSetLayout = VK_NULL_HANDLE;
-    }
-
-    if (nbodyGpu.billboardPipeline != VK_NULL_HANDLE) {
-        vkDestroyPipeline(device, nbodyGpu.billboardPipeline, nullptr);
-        nbodyGpu.billboardPipeline = VK_NULL_HANDLE;
-    }
-    if (nbodyGpu.billboardPipelineLayout != VK_NULL_HANDLE) {
-        vkDestroyPipelineLayout(device, nbodyGpu.billboardPipelineLayout, nullptr);
-        nbodyGpu.billboardPipelineLayout = VK_NULL_HANDLE;
-    }
-    if (nbodyGpu.billboardSetLayout != VK_NULL_HANDLE) {
-        vkDestroyDescriptorSetLayout(device, nbodyGpu.billboardSetLayout, nullptr);
-        nbodyGpu.billboardSetLayout = VK_NULL_HANDLE;
-    }
-}
-
-void VulkanCubeApp::createNBodyDescriptorResources()
-{
-    if (device == VK_NULL_HANDLE || nbodyGpu.stateBuffers[0] == VK_NULL_HANDLE || particleVertexBuffer == VK_NULL_HANDLE) {
-        return;
-    }
-
-    destroyNBodyDescriptorResources();
-
-    VkDescriptorPoolSize poolSize{};
-    poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    poolSize.descriptorCount = 8;
-
-    VkDescriptorPoolCreateInfo poolInfo{};
-    poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    poolInfo.poolSizeCount = 1;
-    poolInfo.pPoolSizes = &poolSize;
-    poolInfo.maxSets = 4;
-    if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &nbodyGpu.descriptorPool) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to create N-body descriptor pool");
-    }
-
-    std::array<VkDescriptorSetLayout, 2> computeLayouts = {nbodyGpu.computeSetLayout, nbodyGpu.computeSetLayout};
-    VkDescriptorSetAllocateInfo allocInfo{};
-    allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    allocInfo.descriptorPool = nbodyGpu.descriptorPool;
-    allocInfo.descriptorSetCount = static_cast<uint32_t>(computeLayouts.size());
-    allocInfo.pSetLayouts = computeLayouts.data();
-    if (vkAllocateDescriptorSets(device, &allocInfo, nbodyGpu.computeDescriptorSets) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to allocate N-body descriptor sets");
-    }
-
-    for (uint32_t readIndex = 0; readIndex < 2; ++readIndex) {
-        uint32_t writeIndex = 1 - readIndex;
-        VkDescriptorBufferInfo readInfo{};
-        readInfo.buffer = nbodyGpu.stateBuffers[readIndex];
-        readInfo.offset = 0;
-        readInfo.range = nbodyGpu.stateBufferSize;
-        VkDescriptorBufferInfo writeInfo{};
-        writeInfo.buffer = nbodyGpu.stateBuffers[writeIndex];
-        writeInfo.offset = 0;
-        writeInfo.range = nbodyGpu.stateBufferSize;
-
-        VkWriteDescriptorSet descriptorWrites[2]{};
-        descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        descriptorWrites[0].dstSet = nbodyGpu.computeDescriptorSets[readIndex];
-        descriptorWrites[0].dstBinding = 0;
-        descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        descriptorWrites[0].descriptorCount = 1;
-        descriptorWrites[0].pBufferInfo = &readInfo;
-
-        descriptorWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        descriptorWrites[1].dstSet = nbodyGpu.computeDescriptorSets[readIndex];
-        descriptorWrites[1].dstBinding = 1;
-        descriptorWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        descriptorWrites[1].descriptorCount = 1;
-        descriptorWrites[1].pBufferInfo = &writeInfo;
-
-        vkUpdateDescriptorSets(device, 2, descriptorWrites, 0, nullptr);
-    }
-
-    std::array<VkDescriptorSetLayout, 2> billboardLayouts = {nbodyGpu.billboardSetLayout, nbodyGpu.billboardSetLayout};
-    VkDescriptorSetAllocateInfo billboardAlloc{};
-    billboardAlloc.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    billboardAlloc.descriptorPool = nbodyGpu.descriptorPool;
-    billboardAlloc.descriptorSetCount = static_cast<uint32_t>(billboardLayouts.size());
-    billboardAlloc.pSetLayouts = billboardLayouts.data();
-    if (vkAllocateDescriptorSets(device, &billboardAlloc, nbodyGpu.billboardDescriptorSets) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to allocate billboard descriptor sets");
-    }
-
-    for (uint32_t stateIndex = 0; stateIndex < 2; ++stateIndex) {
-        VkDescriptorBufferInfo stateInfo{};
-        stateInfo.buffer = nbodyGpu.stateBuffers[stateIndex];
-        stateInfo.offset = 0;
-        stateInfo.range = nbodyGpu.stateBufferSize;
-
-        VkDescriptorBufferInfo vertexInfo{};
-        vertexInfo.buffer = particleVertexBuffer;
-        vertexInfo.offset = 0;
-        vertexInfo.range = particleVertexCapacity;
-
-        VkWriteDescriptorSet writes[2]{};
-        writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[0].dstSet = nbodyGpu.billboardDescriptorSets[stateIndex];
-        writes[0].dstBinding = 0;
-        writes[0].descriptorCount = 1;
-        writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        writes[0].pBufferInfo = &stateInfo;
-
-        writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[1].dstSet = nbodyGpu.billboardDescriptorSets[stateIndex];
-        writes[1].dstBinding = 1;
-        writes[1].descriptorCount = 1;
-        writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        writes[1].pBufferInfo = &vertexInfo;
-
-        vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
-    }
-}
-
-void VulkanCubeApp::destroyNBodyDescriptorResources()
-{
-    if (device == VK_NULL_HANDLE) {
-        return;
-    }
-
-    if (nbodyGpu.descriptorPool != VK_NULL_HANDLE) {
-        vkDestroyDescriptorPool(device, nbodyGpu.descriptorPool, nullptr);
-        nbodyGpu.descriptorPool = VK_NULL_HANDLE;
-    }
-    nbodyGpu.computeDescriptorSets[0] = VK_NULL_HANDLE;
-    nbodyGpu.computeDescriptorSets[1] = VK_NULL_HANDLE;
-    nbodyGpu.billboardDescriptorSets[0] = VK_NULL_HANDLE;
-    nbodyGpu.billboardDescriptorSets[1] = VK_NULL_HANDLE;
-}
-
-void VulkanCubeApp::recordNBodyCompute(VkCommandBuffer commandBuffer, float deltaSeconds)
-{
-    if (engine == nullptr || !nbodyGpu.enabled || nbodyGpu.computePipeline == VK_NULL_HANDLE || nbodyGpu.billboardPipeline == VK_NULL_HANDLE) {
-        return;
-    }
-
-    const uint32_t substeps = std::max<uint32_t>(1, nbodyGpu.params.solverSubsteps);
-    const float clampedDelta = std::clamp(deltaSeconds, 0.0f, 0.05f);
-    const float stepDt = clampedDelta / static_cast<float>(substeps);
-
-    VkMemoryBarrier computeBarrier{};
-    computeBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-    computeBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-    computeBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-
-    uint32_t readIndex = nbodyGpu.currentReadBuffer;
-    for (uint32_t step = 0; step < substeps; ++step) {
-        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, nbodyGpu.computePipeline);
-        VkDescriptorSet descriptorSet = nbodyGpu.computeDescriptorSets[readIndex];
-        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
-                                nbodyGpu.computePipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
-
-        NBodyComputePushConstants push{};
-        push.deltaTime = stepDt;
-        push.gravityConstant = nbodyGpu.params.gravityConstant;
-        push.softening = nbodyGpu.params.softening;
-        push.damping = nbodyGpu.params.damping;
-        push.colorCycle = nbodyGpu.params.colorCycleSeconds;
-        push.centerPull = nbodyGpu.params.centerPullStrength;
-        push.centerRadius = nbodyGpu.params.centerRadius;
-        push.confinementFalloff = nbodyGpu.params.confinementFalloff;
-        push.maxVelocity = nbodyGpu.params.maxVelocity;
-        push.maxDistance = nbodyGpu.params.maxDistance;
-        push.particleCount = nbodyGpu.particleCount;
-
-        vkCmdPushConstants(commandBuffer, nbodyGpu.computePipelineLayout,
-                           VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(NBodyComputePushConstants), &push);
-
-        const uint32_t groupCount = (nbodyGpu.particleCount + N_BODY_WORKGROUP_SIZE - 1) / N_BODY_WORKGROUP_SIZE;
-        vkCmdDispatch(commandBuffer, groupCount, 1, 1);
-
-        vkCmdPipelineBarrier(commandBuffer,
-                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                             0,
-                             1, &computeBarrier,
-                             0, nullptr,
-                             0, nullptr);
-
-        readIndex = 1 - readIndex;
-    }
-
-    nbodyGpu.currentReadBuffer = readIndex;
-
-    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, nbodyGpu.billboardPipeline);
-    VkDescriptorSet billboardSet = nbodyGpu.billboardDescriptorSets[readIndex];
-    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
-                            nbodyGpu.billboardPipelineLayout, 0, 1, &billboardSet, 0, nullptr);
-
-    const auto& camera = engine->scene().camera();
-    glm::vec3 cameraRight = glm::normalize(camera.rightVector());
-    glm::vec3 cameraForward = glm::normalize(camera.forwardVector());
-    glm::vec3 cameraUp = glm::normalize(glm::cross(cameraRight, cameraForward));
-    if (glm::length2(cameraUp) < 1e-6f) {
-        cameraUp = glm::vec3(0.0f, 1.0f, 0.0f);
-    }
-
-    BillboardPushConstants billboardPush{};
-    billboardPush.cameraRight = glm::vec4(cameraRight, 0.0f);
-    billboardPush.cameraUp = glm::vec4(cameraUp, 0.0f);
-    billboardPush.startColor = glm::vec4(1.0f, 0.75f, 0.35f, 0.95f);
-    billboardPush.endColor = glm::vec4(0.2f, 0.4f, 1.0f, 0.0f);
-    billboardPush.particleScale = nbodyGpu.params.particleScale;
-    billboardPush.colorCycle = nbodyGpu.params.colorCycleSeconds;
-    billboardPush.particleCount = nbodyGpu.particleCount;
-
-    vkCmdPushConstants(commandBuffer, nbodyGpu.billboardPipelineLayout,
-                       VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(BillboardPushConstants), &billboardPush);
-
-    const uint32_t billboardGroups = (nbodyGpu.particleCount + BILLBOARD_WORKGROUP_SIZE - 1) / BILLBOARD_WORKGROUP_SIZE;
-    vkCmdDispatch(commandBuffer, billboardGroups, 1, 1);
-
-    VkBufferMemoryBarrier vertexBarrier{};
-    vertexBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
-    vertexBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-    vertexBarrier.dstAccessMask = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT;
-    vertexBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    vertexBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    vertexBarrier.buffer = particleVertexBuffer;
-    vertexBarrier.offset = 0;
-    vertexBarrier.size = particleVertexCapacity;
-
-    vkCmdPipelineBarrier(commandBuffer,
-                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                         VK_PIPELINE_STAGE_VERTEX_INPUT_BIT,
-                         0,
-                         0, nullptr,
-                         1, &vertexBarrier,
-                         0, nullptr);
-}
-
-void VulkanCubeApp::handleCameraInput(float deltaSeconds)
+void VulkanRenderer::handleCameraInput(float deltaSeconds)
 {
     if (engine == nullptr) {
         return;
@@ -3692,7 +3005,7 @@ void VulkanCubeApp::handleCameraInput(float deltaSeconds)
     engine->scene().camera().applyInput(input, deltaSeconds);
 }
 
-void VulkanCubeApp::updateDeformableMeshes()
+void VulkanRenderer::updateDeformableMeshes()
 {
     deformableDraws.clear();
     deformableIndexCount = 0;
@@ -3783,7 +3096,7 @@ void VulkanCubeApp::updateDeformableMeshes()
     deformableIndexCount = static_cast<uint32_t>(deformableIndexScratch.size());
 }
 
-void VulkanCubeApp::drawFrame()
+void VulkanRenderer::drawFrame()
 {
     const auto now = std::chrono::steady_clock::now();
     float deltaTime = std::chrono::duration<float>(now - lastFrameTime).count();
@@ -3871,7 +3184,7 @@ void VulkanCubeApp::drawFrame()
     currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
 }
 
-uint32_t VulkanCubeApp::findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties) const
+uint32_t VulkanRenderer::findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties) const
 {
     VkPhysicalDeviceMemoryProperties memProperties;
     vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memProperties);
@@ -3885,7 +3198,7 @@ uint32_t VulkanCubeApp::findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlag
     throw std::runtime_error("Failed to find suitable memory type");
 }
 
-void VulkanCubeApp::createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties,
+void VulkanRenderer::createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties,
                                  VkBuffer& buffer, VkDeviceMemory& bufferMemory)
 {
     VkBufferCreateInfo bufferInfo{};
@@ -3913,7 +3226,7 @@ void VulkanCubeApp::createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, Vk
     vkBindBufferMemory(device, buffer, bufferMemory, 0);
 }
 
-void VulkanCubeApp::copyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size)
+void VulkanRenderer::copyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size)
 {
     VkCommandBufferAllocateInfo allocInfo{};
     allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
@@ -3949,7 +3262,7 @@ void VulkanCubeApp::copyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceS
     vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
 }
 
-VkCommandBuffer VulkanCubeApp::beginSingleTimeCommands()
+VkCommandBuffer VulkanRenderer::beginSingleTimeCommands()
 {
     VkCommandBufferAllocateInfo allocInfo{};
     allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
@@ -3970,7 +3283,7 @@ VkCommandBuffer VulkanCubeApp::beginSingleTimeCommands()
     return commandBuffer;
 }
 
-void VulkanCubeApp::endSingleTimeCommands(VkCommandBuffer commandBuffer)
+void VulkanRenderer::endSingleTimeCommands(VkCommandBuffer commandBuffer)
 {
     vkEndCommandBuffer(commandBuffer);
 
@@ -3985,7 +3298,7 @@ void VulkanCubeApp::endSingleTimeCommands(VkCommandBuffer commandBuffer)
     vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
 }
 
-void VulkanCubeApp::transitionImageLayout(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout)
+void VulkanRenderer::transitionImageLayout(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout)
 {
     (void)format;
     VkCommandBuffer commandBuffer = beginSingleTimeCommands();
@@ -4030,7 +3343,7 @@ void VulkanCubeApp::transitionImageLayout(VkImage image, VkFormat format, VkImag
     endSingleTimeCommands(commandBuffer);
 }
 
-void VulkanCubeApp::copyBufferToImage(VkBuffer buffer, VkImage image, uint32_t width, uint32_t height)
+void VulkanRenderer::copyBufferToImage(VkBuffer buffer, VkImage image, uint32_t width, uint32_t height)
 {
     VkCommandBuffer commandBuffer = beginSingleTimeCommands();
 
@@ -4052,7 +3365,7 @@ void VulkanCubeApp::copyBufferToImage(VkBuffer buffer, VkImage image, uint32_t w
     endSingleTimeCommands(commandBuffer);
 }
 
-bool VulkanCubeApp::loadSkyTextureForUi(const std::filesystem::path& path)
+bool VulkanRenderer::loadSkyTextureForUi(const std::filesystem::path& path)
 {
     if (path.empty() || materialSampler == VK_NULL_HANDLE) {
         return false;
@@ -4079,7 +3392,7 @@ bool VulkanCubeApp::loadSkyTextureForUi(const std::filesystem::path& path)
     }
 }
 
-void VulkanCubeApp::destroySkyTexture()
+void VulkanRenderer::destroySkyTexture()
 {
     if (skyTextureId != VK_NULL_HANDLE) {
         uiLayer.unregisterTexture(skyTextureId);
@@ -4092,7 +3405,7 @@ void VulkanCubeApp::destroySkyTexture()
     skyTextureLoaded = false;
 }
 
-void VulkanCubeApp::ensureSkyTextureLoaded()
+void VulkanRenderer::ensureSkyTextureLoaded()
 {
     if (!skyTextureRequested || pendingSkyTexturePath.empty()) {
         return;
@@ -4111,7 +3424,7 @@ void VulkanCubeApp::ensureSkyTextureLoaded()
     }
 }
 
-void VulkanCubeApp::createImage(uint32_t width, uint32_t height, VkFormat format, VkImageTiling tiling,
+void VulkanRenderer::createImage(uint32_t width, uint32_t height, VkFormat format, VkImageTiling tiling,
                                 VkImageUsageFlags usage, VkMemoryPropertyFlags properties,
                                 VkImage& image, VkDeviceMemory& imageMemory)
 {
@@ -4149,7 +3462,7 @@ void VulkanCubeApp::createImage(uint32_t width, uint32_t height, VkFormat format
     vkBindImageMemory(device, image, imageMemory, 0);
 }
 
-VkImageView VulkanCubeApp::createImageView(VkImage image, VkFormat format, VkImageAspectFlags aspectFlags) const
+VkImageView VulkanRenderer::createImageView(VkImage image, VkFormat format, VkImageAspectFlags aspectFlags) const
 {
     VkImageViewCreateInfo viewInfo{};
     viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -4174,7 +3487,7 @@ VkImageView VulkanCubeApp::createImageView(VkImage image, VkFormat format, VkIma
     return imageView;
 }
 
-void VulkanCubeApp::ensureParticleVertexCapacity(VkDeviceSize requiredSize)
+void VulkanRenderer::ensureParticleVertexCapacity(VkDeviceSize requiredSize)
 {
     if (requiredSize == 0) {
         return;
@@ -4191,25 +3504,14 @@ void VulkanCubeApp::ensureParticleVertexCapacity(VkDeviceSize requiredSize)
     destroyParticleBuffers();
 
     particleVertexCapacity = std::max<VkDeviceSize>(requiredSize, sizeof(ParticleVertex) * 256);
-    VkBufferUsageFlags usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
-    if (particleBufferNeedsStorage) {
-        usage |= VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-    }
-
     createBuffer(particleVertexCapacity,
-                 usage,
+                 VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
                  VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                  particleVertexBuffer,
                  particleVertexBufferMemory);
-
-    if (nbodyGpu.enabled) {
-        destroyNBodyDescriptorResources();
-        createNBodyDescriptorResources();
-        particleVertexCount = static_cast<uint32_t>(nbodyGpu.particleCount) * 6;
-    }
 }
 
-void VulkanCubeApp::destroyParticleBuffers()
+void VulkanRenderer::destroyParticleBuffers()
 {
     if (particleVertexBuffer != VK_NULL_HANDLE) {
         vkDestroyBuffer(device, particleVertexBuffer, nullptr);
@@ -4223,7 +3525,7 @@ void VulkanCubeApp::destroyParticleBuffers()
     particleVertexCount = 0;
 }
 
-bool VulkanCubeApp::checkValidationLayerSupport() const
+bool VulkanRenderer::checkValidationLayerSupport() const
 {
     uint32_t layerCount;
     vkEnumerateInstanceLayerProperties(&layerCount, nullptr);
@@ -4249,7 +3551,7 @@ bool VulkanCubeApp::checkValidationLayerSupport() const
     return true;
 }
 
-std::vector<const char*> VulkanCubeApp::getRequiredExtensions() const
+std::vector<const char*> VulkanRenderer::getRequiredExtensions() const
 {
     uint32_t glfwExtensionCount = 0;
     const char** glfwExtensions = glfwGetRequiredInstanceExtensions(&glfwExtensionCount);
@@ -4263,7 +3565,7 @@ std::vector<const char*> VulkanCubeApp::getRequiredExtensions() const
     return extensions;
 }
 
-QueueFamilyIndices VulkanCubeApp::findQueueFamilies(VkPhysicalDevice physicalDeviceHandle) const
+QueueFamilyIndices VulkanRenderer::findQueueFamilies(VkPhysicalDevice physicalDeviceHandle) const
 {
     QueueFamilyIndices indices;
 
@@ -4295,7 +3597,7 @@ QueueFamilyIndices VulkanCubeApp::findQueueFamilies(VkPhysicalDevice physicalDev
     return indices;
 }
 
-bool VulkanCubeApp::isDeviceSuitable(VkPhysicalDevice physicalDeviceHandle) const
+bool VulkanRenderer::isDeviceSuitable(VkPhysicalDevice physicalDeviceHandle) const
 {
     QueueFamilyIndices indices = findQueueFamilies(physicalDeviceHandle);
 
@@ -4328,7 +3630,7 @@ bool VulkanCubeApp::isDeviceSuitable(VkPhysicalDevice physicalDeviceHandle) cons
     return indices.isComplete() && extensionsSupported && swapChainAdequate;
 }
 
-SwapChainSupportDetails VulkanCubeApp::querySwapChainSupport(VkPhysicalDevice physicalDeviceHandle) const
+SwapChainSupportDetails VulkanRenderer::querySwapChainSupport(VkPhysicalDevice physicalDeviceHandle) const
 {
     SwapChainSupportDetails details;
     vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physicalDeviceHandle, surface, &details.capabilities);
@@ -4352,7 +3654,7 @@ SwapChainSupportDetails VulkanCubeApp::querySwapChainSupport(VkPhysicalDevice ph
     return details;
 }
 
-VkSurfaceFormatKHR VulkanCubeApp::chooseSwapSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& availableFormats) const
+VkSurfaceFormatKHR VulkanRenderer::chooseSwapSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& availableFormats) const
 {
     for (const auto& availableFormat : availableFormats) {
         if (availableFormat.format == VK_FORMAT_B8G8R8A8_SRGB &&
@@ -4364,7 +3666,7 @@ VkSurfaceFormatKHR VulkanCubeApp::chooseSwapSurfaceFormat(const std::vector<VkSu
     return availableFormats.front();
 }
 
-VkPresentModeKHR VulkanCubeApp::chooseSwapPresentMode(const std::vector<VkPresentModeKHR>& availablePresentModes) const
+VkPresentModeKHR VulkanRenderer::chooseSwapPresentMode(const std::vector<VkPresentModeKHR>& availablePresentModes) const
 {
     for (const auto& availablePresentMode : availablePresentModes) {
         if (availablePresentMode == VK_PRESENT_MODE_MAILBOX_KHR) {
@@ -4374,7 +3676,7 @@ VkPresentModeKHR VulkanCubeApp::chooseSwapPresentMode(const std::vector<VkPresen
     return VK_PRESENT_MODE_FIFO_KHR;
 }
 
-VkExtent2D VulkanCubeApp::chooseSwapExtent(const VkSurfaceCapabilitiesKHR& capabilities) const
+VkExtent2D VulkanRenderer::chooseSwapExtent(const VkSurfaceCapabilitiesKHR& capabilities) const
 {
     if (capabilities.currentExtent.width != std::numeric_limits<uint32_t>::max()) {
         return capabilities.currentExtent;
@@ -4390,7 +3692,7 @@ VkExtent2D VulkanCubeApp::chooseSwapExtent(const VkSurfaceCapabilitiesKHR& capab
     return actualExtent;
 }
 
-VkFormat VulkanCubeApp::findSupportedFormat(const std::vector<VkFormat>& candidates, VkImageTiling tiling,
+VkFormat VulkanRenderer::findSupportedFormat(const std::vector<VkFormat>& candidates, VkImageTiling tiling,
                                             VkFormatFeatureFlags features) const
 {
     for (VkFormat format : candidates) {
@@ -4408,7 +3710,7 @@ VkFormat VulkanCubeApp::findSupportedFormat(const std::vector<VkFormat>& candida
     throw std::runtime_error("Failed to find supported format");
 }
 
-VkFormat VulkanCubeApp::findDepthFormat() const
+VkFormat VulkanRenderer::findDepthFormat() const
 {
     return findSupportedFormat(
         {VK_FORMAT_D32_SFLOAT, VK_FORMAT_D32_SFLOAT_S8_UINT, VK_FORMAT_D24_UNORM_S8_UINT},
@@ -4416,12 +3718,12 @@ VkFormat VulkanCubeApp::findDepthFormat() const
     VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT);
 }
 
-bool VulkanCubeApp::hasStencilComponent(VkFormat format) const
+bool VulkanRenderer::hasStencilComponent(VkFormat format) const
 {
     return format == VK_FORMAT_D32_SFLOAT_S8_UINT || format == VK_FORMAT_D24_UNORM_S8_UINT;
 }
 
-VkShaderModule VulkanCubeApp::createShaderModule(const std::vector<char>& code) const
+VkShaderModule VulkanRenderer::createShaderModule(const std::vector<char>& code) const
 {
     VkShaderModuleCreateInfo createInfo{};
     createInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
@@ -4434,167 +3736,4 @@ VkShaderModule VulkanCubeApp::createShaderModule(const std::vector<char>& code) 
     }
 
     return shaderModule;
-}
-
-void VulkanCubeApp::framebufferResizeCallback(GLFWwindow* window, int /*width*/, int /*height*/)
-{
-    auto app = reinterpret_cast<VulkanCubeApp*>(glfwGetWindowUserPointer(window));
-    app->framebufferResized = true;
-}
-
-void VulkanCubeApp::setupInputCallbacks()
-{
-    glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
-    glfwSetKeyCallback(window, keyCallback);
-    glfwSetCursorPosCallback(window, cursorPositionCallback);
-    glfwSetMouseButtonCallback(window, mouseButtonCallback);
-}
-
-void VulkanCubeApp::cursorPositionCallback(GLFWwindow* window, double xpos, double ypos)
-{
-    auto* app = static_cast<VulkanCubeApp*>(glfwGetWindowUserPointer(window));
-    if (app == nullptr) {
-        return;
-    }
-    app->inputManager.handleMousePosition(xpos, ypos);
-    if (app->customCursorCallback) {
-        app->customCursorCallback(xpos, ypos);
-    }
-}
-
-void VulkanCubeApp::mouseButtonCallback(GLFWwindow* window, int button, int action, int /*mods*/)
-{
-    auto* app = static_cast<VulkanCubeApp*>(glfwGetWindowUserPointer(window));
-    if (app == nullptr || button != GLFW_MOUSE_BUTTON_RIGHT) {
-        if (app != nullptr && app->customMouseButtonCallback) {
-            double cursorX = 0.0;
-            double cursorY = 0.0;
-            glfwGetCursorPos(window, &cursorX, &cursorY);
-            app->customMouseButtonCallback(button, action, cursorX, cursorY);
-        }
-        return;
-    }
-
-    if (action == GLFW_PRESS) {
-        app->inputManager.enableMouseLook(true);
-        glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
-    } else if (action == GLFW_RELEASE) {
-        app->inputManager.enableMouseLook(false);
-        glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
-    }
-
-    if (app->customMouseButtonCallback) {
-        double cursorX = 0.0;
-        double cursorY = 0.0;
-        glfwGetCursorPos(window, &cursorX, &cursorY);
-        app->customMouseButtonCallback(button, action, cursorX, cursorY);
-    }
-}
-
-void VulkanCubeApp::handleHotkeys(int key, int action)
-{
-    if (action != GLFW_PRESS) {
-        return;
-    }
-
-    switch (key) {
-    case GLFW_KEY_F1:
-        cycleVisualizationMode();
-        break;
-    case GLFW_KEY_F2:
-        shadowsEnabled = !shadowsEnabled;
-        std::cout << "Shadows " << (shadowsEnabled ? "enabled" : "disabled") << '\n';
-        break;
-    case GLFW_KEY_F3:
-        specularEnabled = !specularEnabled;
-        std::cout << "Specular highlights " << (specularEnabled ? "enabled" : "disabled") << '\n';
-        break;
-    case GLFW_KEY_F4:
-        animateLight = !animateLight;
-        std::cout << "Light animation " << (animateLight ? "enabled" : "disabled") << '\n';
-        break;
-    case GLFW_KEY_F5:
-        cycleShaderStyle();
-        break;
-    default:
-        break;
-    }
-}
-
-void VulkanCubeApp::cycleVisualizationMode()
-{
-    static constexpr const char* kModeLabels[] = {
-        "Final lighting",
-        "Albedo only",
-        "Normals",
-        "Shadow factor",
-        "Fog factor"
-    };
-    constexpr uint32_t modeCount = static_cast<uint32_t>(sizeof(kModeLabels) / sizeof(kModeLabels[0]));
-
-    const uint32_t nextIndex = (static_cast<uint32_t>(visualizationMode) + 1u) % modeCount;
-    visualizationMode = static_cast<VisualizationMode>(nextIndex);
-
-    std::cout << "Shading view: " << kModeLabels[nextIndex] << '\n';
-}
-
-void VulkanCubeApp::cycleShaderStyle()
-{
-    static constexpr const char* kStyleLabels[] = {
-        "Standard",
-        "Toon",
-        "Rim",
-        "Heat",
-        "Gradient",
-        "Wireframe",
-        "Glow"
-    };
-    constexpr uint32_t styleCount = static_cast<uint32_t>(sizeof(kStyleLabels) / sizeof(kStyleLabels[0]));
-
-    const uint32_t nextIndex = (static_cast<uint32_t>(shaderStyle) + 1u) % styleCount;
-    shaderStyle = static_cast<ShaderStyle>(nextIndex);
-
-    std::cout << "Shader style: " << kStyleLabels[nextIndex] << '\n';
-}
-
-void VulkanCubeApp::printHotkeyHelp() const
-{
-    std::cout << "Hotkeys - F1: cycle shading views, F2: toggle shadows, F3: toggle specular, F4: toggle light animation, F5: cycle shader style" << '\n';
-}
-
-void VulkanCubeApp::setCustomCursorCallback(CursorCallback callback)
-{
-    customCursorCallback = std::move(callback);
-}
-
-void VulkanCubeApp::setCustomMouseButtonCallback(MouseButtonCallback callback)
-{
-    customMouseButtonCallback = std::move(callback);
-}
-
-void VulkanCubeApp::keyCallback(GLFWwindow* window, int key, int /*scancode*/, int action, int /*mods*/)
-{
-    auto* app = static_cast<VulkanCubeApp*>(glfwGetWindowUserPointer(window));
-    if (app == nullptr) {
-        return;
-    }
-
-    const bool pressed = action == GLFW_PRESS || action == GLFW_REPEAT;
-    if (action == GLFW_PRESS || action == GLFW_REPEAT) {
-        app->inputManager.setKeyState(key, true);
-    } else if (action == GLFW_RELEASE) {
-        app->inputManager.setKeyState(key, false);
-    }
-
-    app->handleHotkeys(key, action);
-
-    if (key == GLFW_KEY_ESCAPE && pressed && app->inputManager.isMouseLookActive()) {
-        app->inputManager.enableMouseLook(false);
-        glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
-        return;
-    }
-
-    if (key == GLFW_KEY_ESCAPE && pressed && !app->inputManager.isMouseLookActive()) {
-        app->requestExit();
-    }
 }

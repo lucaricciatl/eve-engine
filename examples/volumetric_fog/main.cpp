@@ -54,10 +54,10 @@ try {
     keyLight.intensity = 2.5f;
     scene.createLight(keyLight);
 
-    VulkanCubeApp renderer(engine);
+    VulkanRenderer renderer(engine);
     renderer.setSkyColor(glm::vec4{0.08f, 0.09f, 0.12f, 1.0f});
 
-    VulkanCubeApp::FogSettings fog{};
+    VulkanRenderer::FogSettings fog{};
     fog.enabled = true;
     fog.color = glm::vec3{0.95f, 0.15f, 0.15f};
     fog.density = 0.2f;

@@ -56,7 +56,7 @@ try {
     keyLightInfo.intensity = 2.0f;
     auto& keyLight = scene.createLight(keyLightInfo);
 
-    VulkanCubeApp renderer(engine);
+    VulkanRenderer renderer(engine);
     const auto capture = vkengine::parseHeadlessCaptureArgs(argc, argv, "CubeExample");
     if (capture.enabled) {
         WindowConfig window{};

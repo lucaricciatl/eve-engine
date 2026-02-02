@@ -57,21 +57,56 @@ if(NOT GLSLC_EXECUTABLE)
     message(FATAL_ERROR "Unable to locate glslc. Please ensure that the Vulkan SDK is installed and glslc is on PATH or set VULKAN_SDK.")
 endif()
 
+option(AUTO_FETCH_VULKAN_LOADER "Automatically fetch Vulkan-Loader" ON)
+option(AUTO_FETCH_VULKAN_HEADERS "Automatically fetch Vulkan-Headers" ON)
+
 set(VULKAN_LOADER_ROOT ${CMAKE_SOURCE_DIR}/external/Vulkan-Loader)
 if(NOT EXISTS ${VULKAN_LOADER_ROOT}/CMakeLists.txt)
-    message(FATAL_ERROR "Vulkan-Loader repository not found. Please clone it into external/Vulkan-Loader")
+    if(AUTO_FETCH_VULKAN_LOADER)
+        FetchContent_Declare(
+            vulkan_loader
+            GIT_REPOSITORY https://github.com/KhronosGroup/Vulkan-Loader.git
+            GIT_TAG v1.3.290
+            GIT_SHALLOW TRUE
+            GIT_SUBMODULES ""
+            GIT_SUBMODULES_RECURSE FALSE
+        )
+        FetchContent_GetProperties(vulkan_loader)
+        if(NOT vulkan_loader_POPULATED)
+            FetchContent_Populate(vulkan_loader)
+        endif()
+        set(VULKAN_LOADER_ROOT ${vulkan_loader_SOURCE_DIR})
+    else()
+        message(FATAL_ERROR "Vulkan-Loader repository not found. Please clone it into external/Vulkan-Loader")
+    endif()
 endif()
 
-set(VULKAN_HEADERS_SOURCE_DIR ${VULKAN_LOADER_ROOT}/external/Vulkan-Headers CACHE PATH "" FORCE)
+set(VULKAN_HEADERS_SOURCE_DIR ${CMAKE_SOURCE_DIR}/external/Vulkan-Headers)
+if(EXISTS ${VULKAN_LOADER_ROOT}/external/Vulkan-Headers/CMakeLists.txt)
+    set(VULKAN_HEADERS_SOURCE_DIR ${VULKAN_LOADER_ROOT}/external/Vulkan-Headers)
+endif()
 if(NOT EXISTS ${VULKAN_HEADERS_SOURCE_DIR}/CMakeLists.txt)
-    message(FATAL_ERROR "Vulkan-Headers repository not found under ${VULKAN_LOADER_ROOT}/external")
+    if(AUTO_FETCH_VULKAN_HEADERS)
+        FetchContent_Declare(
+            vulkan_headers
+            GIT_REPOSITORY https://github.com/KhronosGroup/Vulkan-Headers.git
+            GIT_TAG v1.3.290
+            GIT_SHALLOW TRUE
+        )
+        FetchContent_GetProperties(vulkan_headers)
+        if(NOT vulkan_headers_POPULATED)
+            FetchContent_Populate(vulkan_headers)
+        endif()
+        set(VULKAN_HEADERS_SOURCE_DIR ${vulkan_headers_SOURCE_DIR})
+    else()
+        message(FATAL_ERROR "Vulkan-Headers repository not found. Please clone it into external/Vulkan-Headers")
+    endif()
 endif()
 
-set(VULKAN_HEADERS_INSTALL_DIR ${VULKAN_HEADERS_SOURCE_DIR}/install)
-set(VulkanHeaders_DIR ${VULKAN_HEADERS_INSTALL_DIR}/share/cmake/VulkanHeaders CACHE PATH "" FORCE)
-if(NOT EXISTS ${VulkanHeaders_DIR}/VulkanHeadersConfig.cmake)
-    message(FATAL_ERROR "Vulkan-Headers install not found. Run cmake --build build/vkheaders --target install first.")
-endif()
+set(VULKAN_HEADERS_BUILD_DIR ${CMAKE_BINARY_DIR}/external/Vulkan-Headers)
+add_subdirectory(${VULKAN_HEADERS_SOURCE_DIR} ${VULKAN_HEADERS_BUILD_DIR})
+
+set(VULKAN_HEADERS_INCLUDE_DIR ${VULKAN_HEADERS_SOURCE_DIR}/include)
 
 set(BUILD_TESTS OFF CACHE BOOL "" FORCE)
 add_subdirectory(${VULKAN_LOADER_ROOT} ${CMAKE_BINARY_DIR}/external/Vulkan-Loader)
@@ -123,7 +158,7 @@ target_include_directories(imgui
     PUBLIC
         ${imgui_SOURCE_DIR}
         ${imgui_SOURCE_DIR}/backends
-    ${VULKAN_HEADERS_INSTALL_DIR}/include
+    ${VULKAN_HEADERS_INCLUDE_DIR}
 )
 target_link_libraries(imgui PUBLIC glfw Vulkan::Loader)
 if(MSVC)
@@ -159,6 +194,7 @@ set(CORE_ENGINE_SOURCES
 
 set(CORE_RENDERER_SOURCES
     src/core/VulkanRenderer.cpp
+    src/core/VulkanRenderer.Ui.cpp
     src/core/WindowManager.cpp
     src/core/sky/Sky.cpp
     src/core/filesystem/FileSystem.cpp

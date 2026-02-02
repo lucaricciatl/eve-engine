@@ -128,7 +128,7 @@ try {
     std::cout << "  F2 - Toggle shadows\n";
     std::cout << "  F4 - Toggle light animation\n\n";
 
-    VulkanCubeApp renderer(engine);
+    VulkanRenderer renderer(engine);
     renderer.setLightAnimationEnabled(false);
     const auto capture = vkengine::parseHeadlessCaptureArgs(argc, argv, "PhysicsExample");
     if (capture.enabled) {

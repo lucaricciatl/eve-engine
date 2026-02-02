@@ -24,12 +24,12 @@ namespace {
 
 struct EmitterHandle {
     vkengine::GameObject* object{nullptr};
-    vkengine::Light* light{nullptr};
+    core::ecs::Entity lightEntity{};
 };
 
 class EmittingBodiesManipulator {
 public:
-    void bind(VulkanCubeApp& appRef,
+    void bind(VulkanRenderer& appRef,
               vkengine::GameEngine& engineRef,
               std::shared_ptr<std::vector<EmitterHandle>> emittersRef)
     {
@@ -86,9 +86,10 @@ public:
         transform.position.y = emitterHeight;
         clampToPlane(transform.position);
 
-        if (emitter.light != nullptr) {
-            emitter.light->setPosition(transform.position + glm::vec3(0.0f, lightOffset, 0.0f));
-            emitter.light->setColor(emitter.object->render().emissive);
+        if (emitter.lightEntity) {
+            vkengine::Light light(engine->scene(), emitter.lightEntity);
+            light.setPosition(transform.position + glm::vec3(0.0f, lightOffset, 0.0f));
+            light.setColor(emitter.object->render().emissive);
         }
     }
 
@@ -148,7 +149,7 @@ private:
     }
 
 private:
-    VulkanCubeApp* app{nullptr};
+    VulkanRenderer* app{nullptr};
     vkengine::GameEngine* engine{nullptr};
     std::shared_ptr<std::vector<EmitterHandle>> emitters{};
 
@@ -235,7 +236,7 @@ std::shared_ptr<std::vector<EmitterHandle>> buildScene(EmittingBodiesEngine& eng
         info.range = 12.0f;
         auto& light = scene.createLight(info);
 
-        emitters->push_back(EmitterHandle{&emitterObject, &light});
+        emitters->push_back(EmitterHandle{&emitterObject, light.entity()});
     }
 
     return emitters;
@@ -259,7 +260,7 @@ try {
     auto manipulator = std::make_shared<EmittingBodiesManipulator>();
     auto emitters = buildScene(engine);
 
-    VulkanCubeApp renderer(engine);
+    VulkanRenderer renderer(engine);
     renderer.setLightAnimationEnabled(false);
     manipulator->bind(renderer, engine, emitters);
     engine.setManipulator(manipulator);

@@ -410,7 +410,7 @@ try {
     std::cout << "Molecular dynamics example: configurable Lennard-Jones atoms." << '\n';
     std::cout << "Controls: WASD/Space/Ctrl to move, Right Mouse to look." << '\n';
 
-    VulkanCubeApp renderer(engine);
+    VulkanRenderer renderer(engine);
     renderer.setLightAnimationEnabled(false);
     renderer.setSceneControlsEnabled(false);
     renderer.setSkyColor(glm::vec3{0.02f, 0.02f, 0.03f});

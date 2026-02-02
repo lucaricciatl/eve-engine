@@ -54,7 +54,7 @@ try {
     keyLight.intensity = 2.5f;
     scene.createLight(keyLight);
 
-    VulkanCubeApp renderer(engine);
+    VulkanRenderer renderer(engine);
     renderer.setSkyColor(glm::vec4{0.08f, 0.09f, 0.12f, 1.0f});
     renderer.setLightAnimationEnabled(false);
 

@@ -41,5 +41,5 @@
 *.dwo
 
 # paths
-./build/*
-./tests/test_results/renders/*
+/build/
+/tests/test_results/

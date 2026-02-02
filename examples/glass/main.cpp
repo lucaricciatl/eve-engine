@@ -77,7 +77,7 @@ try {
     std::cout << "Transparent cubes use a fresnel-tinted shader variant.\n";
     std::cout << "Try toggling specular with F3 and shadows with F2.\n\n";
 
-    VulkanCubeApp renderer(engine);
+    VulkanRenderer renderer(engine);
     const auto capture = vkengine::parseHeadlessCaptureArgs(argc, argv, "GlassExample");
     if (capture.enabled) {
         WindowConfig window{};

@@ -54,7 +54,7 @@ try {
     rigLightInfo.intensity = 6.0f;
     auto& light = scene.createLight(rigLightInfo);
 
-    VulkanCubeApp renderer(engine);
+    VulkanRenderer renderer(engine);
     renderer.setLightAnimationEnabled(false);
     const auto capture = vkengine::parseHeadlessCaptureArgs(argc, argv, "DeformableExample");
     if (capture.enabled) {

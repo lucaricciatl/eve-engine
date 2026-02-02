@@ -53,7 +53,7 @@ class LatticeManipulator {
 public:
     using RebuildCallback = std::function<void()>;
 
-    void bind(VulkanCubeApp& appRef, vkengine::GameEngine& engineRef)
+    void bind(VulkanRenderer& appRef, vkengine::GameEngine& engineRef)
     {
         app = &appRef;
         engine = &engineRef;
@@ -162,7 +162,7 @@ public:
     }
 
 private:
-    VulkanCubeApp* app{nullptr};
+    VulkanRenderer* app{nullptr};
     vkengine::GameEngine* engine{nullptr};
     std::vector<vkengine::GameObject*> sphereObjects;
     RebuildCallback rebuildCallback;
@@ -488,7 +488,7 @@ try {
 
     engine.setManipulator(manipulator);
 
-    VulkanCubeApp renderer(engine);
+    VulkanRenderer renderer(engine);
     renderer.setLightAnimationEnabled(false);  // Fixed light position
     manipulator->bind(renderer, engine);
     manipulator->setSpheres(std::move(sphereObjects));

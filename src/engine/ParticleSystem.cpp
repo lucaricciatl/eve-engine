@@ -1,5 +1,6 @@
 #include "engine/ParticleSystem.hpp"
 
+#include "core/ParallelFor.hpp"
 #include "core/ecs/Components.hpp"
 #include "core/ecs/Registry.hpp"
 
@@ -210,11 +211,16 @@ void ParticleSystem::update(float deltaSeconds)
         return;
     }
 
+    std::vector<ParticleEmitter*> emitters;
     ecsRegistry->view<ParticleEmitterComponent>([&](core::ecs::Entity, ParticleEmitterComponent& component) {
         if (!component.enabled || !component.emitter) {
             return;
         }
-        component.emitter->update(deltaSeconds);
+        emitters.push_back(component.emitter.get());
+    });
+
+    core::parallelFor(emitters.size(), 4, [&](std::size_t index) {
+        emitters[index]->update(deltaSeconds);
     });
 }
 

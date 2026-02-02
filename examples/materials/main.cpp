@@ -117,7 +117,7 @@ try {
     std::cout << "\n=== Materials Example ===\n";
     std::cout << "Shows every built-in material in a grid.\n\n";
 
-    VulkanCubeApp renderer(engine);
+    VulkanRenderer renderer(engine);
     const auto capture = vkengine::parseHeadlessCaptureArgs(argc, argv, "MaterialsExample");
     if (capture.enabled) {
         WindowConfig window{};

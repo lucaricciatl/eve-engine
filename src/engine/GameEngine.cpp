@@ -1,5 +1,7 @@
 #include "engine/GameEngine.hpp"
 
+#include "core/ParallelFor.hpp"
+
 #include <glm/gtc/constants.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
@@ -8,6 +10,7 @@
 #include <limits>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace vkengine {
 
@@ -562,14 +565,28 @@ void GameEngine::update(float deltaSeconds)
 {
     physicsSystem.update(activeScene, deltaSeconds);
     particleSystem.update(deltaSeconds);
+
+    std::vector<DeformableBody*> cloths;
+    std::vector<SoftBodyVolume*> softBodies;
+    cloths.reserve(activeScene.objects().size());
+    softBodies.reserve(activeScene.objects().size());
+
     for (auto& object : activeScene.objects()) {
         if (auto* cloth = object.deformable()) {
-            cloth->simulate(deltaSeconds, physicsSystem.getGravity());
+            cloths.push_back(cloth);
         }
         if (auto* soft = object.softBody()) {
-            soft->simulate(deltaSeconds, physicsSystem.getGravity());
+            softBodies.push_back(soft);
         }
     }
+
+    const auto gravity = physicsSystem.getGravity();
+    core::parallelFor(cloths.size(), 8, [&](std::size_t index) {
+        cloths[index]->simulate(deltaSeconds, gravity);
+    });
+    core::parallelFor(softBodies.size(), 8, [&](std::size_t index) {
+        softBodies[index]->simulate(deltaSeconds, gravity);
+    });
 }
 
 } // namespace vkengine

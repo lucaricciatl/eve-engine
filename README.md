@@ -198,7 +198,7 @@ imported.setAlbedoTexture("assets/textures/checker.ppm");
 imported.setBaseColor({0.85f, 0.9f, 1.0f});
 imported.transform().position = {1.5f, 0.25f, -1.5f};
 
-VulkanCubeApp renderer(engine);
+VulkanRenderer renderer(engine);
 renderer.run();
 ```
 
@@ -207,12 +207,12 @@ During `drawFrame`, the renderer advances the engine by the frame delta, updates
 
 - `CMakeLists.txt` – Build configuration, dependency fetching, shader compilation, and the new `core` static library that aggregates the ECS, engine, and renderer layers.
 - `include/core/ecs/` – Header-only ECS registry (`Entity.hpp`, `Registry.hpp`) plus shared component definitions used by every gameplay system.
-- `include/VulkanCubeApp.hpp` – Vulkan renderer declaration that implements `vkengine::IRenderer` and now resides inside the core module.
+- `include/core/VulkanCubeApp.hpp` – Legacy compatibility header; prefer `include/core/VulkanRenderer.hpp`.
 - `include/core/units/MetricUnits.hpp` – Metric units helper types (length, mass, time, temperature) with conversions.
 - `include/engine/*.hpp` – ECS-backed gameplay API (scene, objects, physics, particles, deformables, renderer abstractions).
 - `src/engine/*.cpp` – Implementation of the engine, transforms, and systems; all component reads/writes go through the ECS registry.
 - `src/core/units/MetricUnits.cpp` – Metric conversion utilities and derived unit helpers.
-- `examples/vulkan_cube/VulkanCubeApp.cpp` – Full Vulkan setup, render loop, and integration with the ECS-backed engine.
+- `src/core/VulkanRenderer.cpp` – Full Vulkan setup, render loop, and integration with the ECS-backed engine.
 - `examples/*/main.cpp` – Entry points for the cube, particle, deformable, and N-body demos—all link against the `core` module.
 - `shaders/` – GLSL vertex, fragment, and compute shaders compiled at build time (including `shadow.vert` for the depth-only pass).
 - `.github/copilot-instructions.md` – Workspace automation checklist.

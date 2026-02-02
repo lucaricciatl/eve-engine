@@ -4,4 +4,4 @@
 #include "core/VulkanRenderer.hpp"
 
 // Backward compatibility alias for the example entry point name.
-using VulkanCubeApp = ::VulkanRenderer;
+using VulkanRenderer = ::VulkanRenderer;

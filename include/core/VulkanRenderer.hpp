@@ -14,7 +14,6 @@
 #include "engine/assets/TextureLoader.hpp"
 #include "core/sky/Sky.hpp"
 #include "core/PipelineLibrary.hpp"
-#include "examples/nbody/NBodyGpuInterop.hpp"
 #include "ui/ImGuiLayer.hpp"
 #include "core/WindowManager.hpp"
 #include "core/Vertex.hpp"
@@ -73,7 +72,7 @@ struct SwapChainSupportDetails {
 	std::vector<VkPresentModeKHR> presentModes;
 };
 
-class VulkanCubeApp : public vkengine::IRenderer {
+class VulkanRenderer : public vkengine::IRenderer {
 public:
 	struct FogSettings {
 		bool enabled{false};
@@ -84,7 +83,7 @@ public:
 		float startDistance{0.0f};
 	};
 
-	explicit VulkanCubeApp(vkengine::IGameEngine& engineRef);
+	explicit VulkanRenderer(vkengine::IGameEngine& engineRef);
 	void attachEngine(vkengine::IGameEngine& engineRef) override;
 	void run() override;
 
@@ -246,14 +245,6 @@ private:
 	void ensureParticleVertexCapacity(VkDeviceSize requiredSize);
 	void destroyParticleBuffers();
 	void destroyCaptureResources();
-	void initializeGpuNBodyContext();
-	void destroyGpuNBodyContext();
-	void createNBodyStateBuffers(VkDeviceSize bufferSize, const std::vector<vkengine::NBodyParticleState>& initialStates);
-	void createNBodyDescriptorResources();
-	void destroyNBodyDescriptorResources();
-	void createNBodyPipelines();
-	void destroyNBodyPipelines();
-	void recordNBodyCompute(VkCommandBuffer commandBuffer, float deltaSeconds);
 
 	MeshGpuBuffers& getOrCreateMesh(const vkengine::RenderComponent& renderComponent);
 	TextureResource& getOrCreateTexture(const vkengine::RenderComponent& renderComponent);
@@ -396,7 +387,6 @@ private:
 		vkengine::RenderComponent render;
 	};
 	std::vector<ParticleMeshInstance> particleMeshInstances;
-	bool particleBufferNeedsStorage = false;
 
 	std::vector<VkBuffer> uniformBuffers;
 	std::vector<VkDeviceMemory> uniformBuffersMemory;
@@ -489,29 +479,8 @@ private:
 	VkDeviceSize deformableIndexCapacity = 0;
 	uint32_t deformableIndexCount = 0;
 
-	struct NBodyGpuState {
-		vkengine::INBodyGpuProvider* provider = nullptr;
-		vkengine::NBodyGpuParams params{};
-		bool enabled = false;
-		uint32_t particleCount = 0;
-		VkDeviceSize stateBufferSize = 0;
-		VkBuffer stateBuffers[2]{VK_NULL_HANDLE, VK_NULL_HANDLE};
-		VkDeviceMemory stateMemory[2]{VK_NULL_HANDLE, VK_NULL_HANDLE};
-		uint32_t currentReadBuffer = 0;
-		VkDescriptorSetLayout computeSetLayout = VK_NULL_HANDLE;
-		VkPipelineLayout computePipelineLayout = VK_NULL_HANDLE;
-		VkPipeline computePipeline = VK_NULL_HANDLE;
-		VkDescriptorSetLayout billboardSetLayout = VK_NULL_HANDLE;
-		VkPipelineLayout billboardPipelineLayout = VK_NULL_HANDLE;
-		VkPipeline billboardPipeline = VK_NULL_HANDLE;
-		VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
-		VkDescriptorSet computeDescriptorSets[2]{};
-		VkDescriptorSet billboardDescriptorSets[2]{};
-	} nbodyGpu;
 
 	std::unordered_map<std::string, MeshGpuBuffers> meshCache;
 	std::unordered_map<std::string, TextureResource> textureCache;
 };
 
-// Preferred name for consumers
-using VulkanRenderer = VulkanCubeApp;

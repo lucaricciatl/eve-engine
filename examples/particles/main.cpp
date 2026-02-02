@@ -75,7 +75,7 @@ try {
     // Keep the emitter count within the renderer's default particle vertex buffer budget
     engine.configureParticles(40);
 
-    VulkanCubeApp renderer(engine);
+    VulkanRenderer renderer(engine);
     const auto capture = vkengine::parseHeadlessCaptureArgs(argc, argv, "ParticleExample");
     if (capture.enabled) {
         WindowConfig window{};

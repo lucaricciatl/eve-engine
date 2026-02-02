@@ -30,7 +30,7 @@ try {
     lightInfo.intensity = 1.0f;
     scene.createLight(lightInfo);
 
-    VulkanCubeApp renderer(engine);
+    VulkanRenderer renderer(engine);
     renderer.setLightAnimationEnabled(false);
 
     renderer.setCustomUiCallback([&engine](float dt) {

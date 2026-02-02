@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <map>
+#include <mutex>
 #include <memory>
 #include <typeindex>
 #include <typeinfo>
@@ -36,6 +37,7 @@ public:
     template <typename Component, typename... Args>
     Component& emplace(Entity entity, Args&&... args)
     {
+        std::scoped_lock lock(registryMutex);
         auto& pool = poolFor<Component>();
         return pool.emplace(entity.id, std::forward<Args>(args)...);
     }
@@ -43,6 +45,7 @@ public:
     template <typename Component>
     bool has(Entity entity) const noexcept
     {
+        std::scoped_lock lock(registryMutex);
         const auto* pool = findPool<Component>();
         if (!pool) {
             return false;
@@ -53,6 +56,7 @@ public:
     template <typename Component>
     Component& get(Entity entity)
     {
+        std::scoped_lock lock(registryMutex);
         auto* pool = findPool<Component>();
         if (!pool) {
             throw std::runtime_error("Component not present on entity");
@@ -63,6 +67,7 @@ public:
     template <typename Component>
     const Component& get(Entity entity) const
     {
+        std::scoped_lock lock(registryMutex);
         const auto* pool = findPool<Component>();
         if (!pool) {
             throw std::runtime_error("Component not present on entity");
@@ -73,6 +78,7 @@ public:
     template <typename Component>
     Component* tryGet(Entity entity) noexcept
     {
+        std::scoped_lock lock(registryMutex);
         auto* pool = findPool<Component>();
         if (!pool) {
             return nullptr;
@@ -83,6 +89,7 @@ public:
     template <typename Component>
     const Component* tryGet(Entity entity) const noexcept
     {
+        std::scoped_lock lock(registryMutex);
         const auto* pool = findPool<Component>();
         if (!pool) {
             return nullptr;
@@ -93,6 +100,7 @@ public:
     template <typename Component>
     void remove(Entity entity)
     {
+        std::scoped_lock lock(registryMutex);
         auto* pool = findPool<Component>();
         if (!pool) {
             return;
@@ -103,6 +111,7 @@ public:
     template <typename Component, typename... Args>
     Component& getOrEmplace(Entity entity, Args&&... args)
     {
+        std::scoped_lock lock(registryMutex);
         if (auto* existing = tryGet<Component>(entity)) {
             return *existing;
         }
@@ -112,6 +121,7 @@ public:
     template <typename... Components, typename Func>
     void view(Func&& func)
     {
+        std::scoped_lock lock(registryMutex);
         for (EntityId id : activeEntities) {
             const Entity entity{id};
             if (((has<Components>(entity)) && ...)) {
@@ -237,10 +247,12 @@ private:
     EntityId nextEntity{1};
     std::vector<EntityId> activeEntities;
     std::unordered_map<std::type_index, std::unique_ptr<IComponentPool>> pools;
+    mutable std::recursive_mutex registryMutex;
 };
 
 inline Entity Registry::createEntity()
 {
+    std::scoped_lock lock(registryMutex);
     Entity entity{nextEntity++};
     activeEntities.push_back(entity.id);
     return entity;
@@ -248,6 +260,7 @@ inline Entity Registry::createEntity()
 
 inline void Registry::destroyEntity(Entity entity)
 {
+    std::scoped_lock lock(registryMutex);
     if (!entity) {
         return;
     }
@@ -259,6 +272,7 @@ inline void Registry::destroyEntity(Entity entity)
 
 inline void Registry::clear()
 {
+    std::scoped_lock lock(registryMutex);
     activeEntities.clear();
     for (auto& [_, pool] : pools) {
         pool->clear();

@@ -67,7 +67,7 @@ try {
     std::cout << "Mirror plane with a cube and its reflected twin.\n";
     std::cout << "Use mouse/right-button to look around.\n\n";
 
-    VulkanCubeApp renderer(engine);
+    VulkanRenderer renderer(engine);
     const auto capture = vkengine::parseHeadlessCaptureArgs(argc, argv, "ReflectionsExample");
     if (capture.enabled) {
         WindowConfig window{};
