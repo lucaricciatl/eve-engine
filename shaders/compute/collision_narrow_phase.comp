@@ -1,0 +1,160 @@
+#version 460
+
+// Narrow-phase collision detection using AABB-AABB intersection tests
+// This shader tests collision pairs identified by broad phase
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+// Collider AABB data
+struct ColliderAABB {
+    vec4 minPos;     // xyz = min bounds, w = object index
+    vec4 maxPos;     // xyz = max bounds, w = flags (static=1, dynamic=0)
+};
+
+// Collision pair from broad phase
+struct CollisionPair {
+    uint objectA;
+    uint objectB;
+    uint padding0;
+    uint padding1;
+};
+
+// Detailed collision result
+struct CollisionResult {
+    uint objectA;
+    uint objectB;
+    vec4 normal;           // xyz = collision normal (A to B), w = penetration depth
+    vec4 contactPoint;     // xyz = contact point, w = validity flag
+};
+
+// Input: all collider AABBs
+layout(std430, binding = 0) readonly buffer ColliderBuffer {
+    ColliderAABB colliders[];
+} inColliders;
+
+// Input: collision pairs from broad phase
+layout(std430, binding = 1) readonly buffer PairBuffer {
+    CollisionPair pairs[];
+} inPairs;
+
+// Output: detailed collision results
+layout(std430, binding = 2) writeonly buffer ResultBuffer {
+    CollisionResult results[];
+} outResults;
+
+// Atomic counter for number of actual collisions
+layout(std430, binding = 3) buffer CounterBuffer {
+    uint collisionCount;
+} counter;
+
+layout(push_constant) uniform NarrowPhaseParams {
+    uint pairCount;
+    uint maxResults;
+    float penetrationSlop;   // Small tolerance for collision detection
+    float padding;
+} params;
+
+// Test AABB-AABB intersection and compute collision details
+bool testAABBIntersection(ColliderAABB a, ColliderAABB b, out vec3 normal, out float penetration, out vec3 contactPoint) {
+    vec3 aCenter = (a.minPos.xyz + a.maxPos.xyz) * 0.5;
+    vec3 bCenter = (b.minPos.xyz + b.maxPos.xyz) * 0.5;
+    vec3 aHalf = (a.maxPos.xyz - a.minPos.xyz) * 0.5;
+    vec3 bHalf = (b.maxPos.xyz - b.minPos.xyz) * 0.5;
+    
+    vec3 delta = bCenter - aCenter;
+    vec3 overlap;
+    overlap.x = (aHalf.x + bHalf.x) - abs(delta.x);
+    overlap.y = (aHalf.y + bHalf.y) - abs(delta.y);
+    overlap.z = (aHalf.z + bHalf.z) - abs(delta.z);
+    
+    // No intersection if any axis has negative overlap
+    if (overlap.x <= 0.0 || overlap.y <= 0.0 || overlap.z <= 0.0) {
+        return false;
+    }
+    
+    // Find minimum overlap axis (separating axis theorem)
+    float minOverlap = overlap.x;
+    normal = vec3((delta.x < 0.0) ? -1.0 : 1.0, 0.0, 0.0);
+    
+    if (overlap.y < minOverlap) {
+        minOverlap = overlap.y;
+        normal = vec3(0.0, (delta.y < 0.0) ? -1.0 : 1.0, 0.0);
+    }
+    if (overlap.z < minOverlap) {
+        minOverlap = overlap.z;
+        normal = vec3(0.0, 0.0, (delta.z < 0.0) ? -1.0 : 1.0);
+    }
+    
+    penetration = minOverlap;
+    
+    // Estimate contact point as midpoint between closest points on surfaces
+    vec3 absNormal = abs(normal);
+    vec3 pointA = aCenter;
+    vec3 pointB = bCenter;
+    
+    if (absNormal.x > absNormal.y && absNormal.x > absNormal.z) {
+        float signX = sign(normal.x);
+        pointA.x += aHalf.x * signX;
+        pointB.x -= bHalf.x * signX;
+    } else if (absNormal.y > absNormal.z) {
+        float signY = sign(normal.y);
+        pointA.y += aHalf.y * signY;
+        pointB.y -= bHalf.y * signY;
+    } else {
+        float signZ = sign(normal.z);
+        pointA.z += aHalf.z * signZ;
+        pointB.z -= bHalf.z * signZ;
+    }
+    
+    contactPoint = (pointA + pointB) * 0.5;
+    
+    return true;
+}
+
+void main() {
+    uint pairIndex = gl_GlobalInvocationID.x;
+    
+    if (pairIndex >= params.pairCount) {
+        return;
+    }
+    
+    CollisionPair pair = inPairs.pairs[pairIndex];
+    
+    // Skip self-collision (shouldn't happen, but safety check)
+    if (pair.objectA == pair.objectB) {
+        return;
+    }
+    
+    ColliderAABB a = inColliders.colliders[pair.objectA];
+    ColliderAABB b = inColliders.colliders[pair.objectB];
+    
+    // Skip if both objects are static
+    bool aStatic = a.maxPos.w > 0.5;
+    bool bStatic = b.maxPos.w > 0.5;
+    if (aStatic && bStatic) {
+        return;
+    }
+    
+    vec3 normal;
+    float penetration;
+    vec3 contactPoint;
+    
+    if (testAABBIntersection(a, b, normal, penetration, contactPoint)) {
+        // Skip if penetration is below threshold
+        if (penetration < params.penetrationSlop) {
+            return;
+        }
+        
+        // Atomically allocate a result slot
+        uint resultIndex = atomicAdd(counter.collisionCount, 1u);
+        
+        if (resultIndex < params.maxResults) {
+            CollisionResult result;
+            result.objectA = pair.objectA;
+            result.objectB = pair.objectB;
+            result.normal = vec4(normal, penetration);
+            result.contactPoint = vec4(contactPoint, 1.0); // w=1 means valid
+            outResults.results[resultIndex] = result;
+        }
+    }
+}

@@ -2,6 +2,7 @@
 #include "core/PipelineLibrary.hpp"
 #include "core/RenderData.hpp"
 #include "engine/assets/ImageWriter.hpp"
+#include "engine/GpuCollisionSystem.hpp"
 
 #ifndef GLM_ENABLE_EXPERIMENTAL
 #define GLM_ENABLE_EXPERIMENTAL
@@ -347,6 +348,7 @@ void VulkanRenderer::initVulkan()
     createRenderPass();
     createShadowRenderPass();
     createReflectionRenderPass();
+    createPostProcessRenderPass();
     createDescriptorSetLayout();
     createMaterialDescriptorPool();
     createPipelines();
@@ -356,6 +358,7 @@ void VulkanRenderer::initVulkan()
     createCommandPool();
     createMaterialResources();
     createReflectionResources();
+    createPostProcessResources(); // This also creates post-process pipelines
     createVertexBuffer();
     createLineVertexBuffer();
     createIndexBuffer();
@@ -365,6 +368,20 @@ void VulkanRenderer::initVulkan()
     initUi();
     createCommandBuffers();
     createSyncObjects();
+    initGpuCollision();
+}
+
+void VulkanRenderer::initGpuCollision()
+{
+    // Initialize GPU collision system with Vulkan resources
+    auto* gpuCollision = engine->physics().gpuCollision();
+    if (gpuCollision) {
+        std::filesystem::path shaderPath = SHADER_BINARY_DIR;
+        QueueFamilyIndices indices = findQueueFamilies(physicalDevice);
+        gpuCollision->initialize(device, physicalDevice, graphicsQueue, 
+                                 indices.graphicsFamily.value(), shaderPath);
+        gpuCollision->setEnabled(true);
+    }
 }
 
 void VulkanRenderer::mainLoop()
@@ -394,8 +411,21 @@ void VulkanRenderer::cleanup()
     if (device != VK_NULL_HANDLE) {
         vkDeviceWaitIdle(device);
     }
+    
+    // Cleanup GPU collision system before destroying Vulkan resources
+    if (auto* gpuCollision = engine->physics().gpuCollision()) {
+        gpuCollision->cleanup();
+    }
+    
     cleanupSwapChain();
 	destroySkyTexture();
+    destroyPostProcessResources();
+    
+    // Destroy the post-process render pass (not destroyed in destroyPostProcessResources)
+    if (postProcessRenderPass != VK_NULL_HANDLE) {
+        vkDestroyRenderPass(device, postProcessRenderPass, nullptr);
+        postProcessRenderPass = VK_NULL_HANDLE;
+    }
 
     destroyUi();
 
@@ -491,6 +521,7 @@ void VulkanRenderer::recreateSwapChain()
     createDepthResources();
     createShadowResources();
     createReflectionResources();
+    createPostProcessResources(); // Recreate post-process resources for new swapchain size
     createFramebuffers();
     createUniformBuffers();
     createDescriptorPool();
@@ -509,6 +540,7 @@ void VulkanRenderer::cleanupSwapChain()
     destroyRenderFinishedSemaphores();
     destroyCaptureResources();
     destroyReflectionResources();
+    destroyPostProcessResources(); // Destroy post-process resources tied to swapchain size
 
     uiLayer.onSwapchainDestroyed();
     skyTextureId = VK_NULL_HANDLE;
@@ -1058,6 +1090,450 @@ void VulkanRenderer::destroyReflectionResources()
     reflectionTexture.width = 0;
     reflectionTexture.height = 0;
     reflectionImageReady = false;
+}
+
+void VulkanRenderer::createPostProcessRenderPass()
+{
+    // Render pass for post-processing - renders to swapchain image
+    VkAttachmentDescription colorAttachment{};
+    colorAttachment.format = swapChainImageFormat;
+    colorAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
+    colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE; // We'll overwrite everything
+    colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    colorAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    colorAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    colorAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    colorAttachment.finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+    VkAttachmentReference colorAttachmentRef{};
+    colorAttachmentRef.attachment = 0;
+    colorAttachmentRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+    VkSubpassDescription subpass{};
+    subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    subpass.colorAttachmentCount = 1;
+    subpass.pColorAttachments = &colorAttachmentRef;
+
+    VkSubpassDependency dependency{};
+    dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
+    dependency.dstSubpass = 0;
+    dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dependency.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    dependency.dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    dependency.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+    VkRenderPassCreateInfo renderPassInfo{};
+    renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+    renderPassInfo.attachmentCount = 1;
+    renderPassInfo.pAttachments = &colorAttachment;
+    renderPassInfo.subpassCount = 1;
+    renderPassInfo.pSubpasses = &subpass;
+    renderPassInfo.dependencyCount = 1;
+    renderPassInfo.pDependencies = &dependency;
+
+    if (vkCreateRenderPass(device, &renderPassInfo, nullptr, &postProcessRenderPass) != VK_SUCCESS) {
+        throw std::runtime_error("Failed to create post-process render pass");
+    }
+}
+
+void VulkanRenderer::createPostProcessResources()
+{
+    destroyPostProcessResources();
+
+    // Create offscreen color image (scene is rendered here first)
+    createImage(swapChainExtent.width, swapChainExtent.height, swapChainImageFormat,
+                VK_IMAGE_TILING_OPTIMAL,
+                VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                offscreenColorImage, offscreenColorMemory);
+    offscreenColorView = createImageView(offscreenColorImage, swapChainImageFormat, VK_IMAGE_ASPECT_COLOR_BIT);
+
+    // Create offscreen depth image
+    VkFormat depthFormat = findDepthFormat();
+    createImage(swapChainExtent.width, swapChainExtent.height, depthFormat,
+                VK_IMAGE_TILING_OPTIMAL,
+                VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                offscreenDepthImage, offscreenDepthMemory);
+    offscreenDepthView = createImageView(offscreenDepthImage, depthFormat, VK_IMAGE_ASPECT_DEPTH_BIT);
+
+    // Create ping-pong image for two-pass blur
+    createImage(swapChainExtent.width, swapChainExtent.height, swapChainImageFormat,
+                VK_IMAGE_TILING_OPTIMAL,
+                VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                pingPongImage, pingPongMemory);
+    pingPongView = createImageView(pingPongImage, swapChainImageFormat, VK_IMAGE_ASPECT_COLOR_BIT);
+
+    // Create offscreen framebuffer
+    std::array<VkImageView, 2> attachments = {offscreenColorView, offscreenDepthView};
+    VkFramebufferCreateInfo framebufferInfo{};
+    framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+    framebufferInfo.renderPass = renderPass; // Use main render pass
+    framebufferInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
+    framebufferInfo.pAttachments = attachments.data();
+    framebufferInfo.width = swapChainExtent.width;
+    framebufferInfo.height = swapChainExtent.height;
+    framebufferInfo.layers = 1;
+
+    if (vkCreateFramebuffer(device, &framebufferInfo, nullptr, &offscreenFramebuffer) != VK_SUCCESS) {
+        throw std::runtime_error("Failed to create offscreen framebuffer");
+    }
+
+    // Create ping-pong framebuffer (color only, uses post-process render pass)
+    VkFramebufferCreateInfo pingPongFbInfo{};
+    pingPongFbInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+    pingPongFbInfo.renderPass = postProcessRenderPass;
+    pingPongFbInfo.attachmentCount = 1;
+    pingPongFbInfo.pAttachments = &pingPongView;
+    pingPongFbInfo.width = swapChainExtent.width;
+    pingPongFbInfo.height = swapChainExtent.height;
+    pingPongFbInfo.layers = 1;
+
+    if (vkCreateFramebuffer(device, &pingPongFbInfo, nullptr, &pingPongFramebuffer) != VK_SUCCESS) {
+        throw std::runtime_error("Failed to create ping-pong framebuffer");
+    }
+
+    // Create swapchain framebuffers for final post-process pass (color only)
+    postProcessSwapchainFramebuffers.resize(swapChainImageViews.size());
+    for (size_t i = 0; i < swapChainImageViews.size(); ++i) {
+        VkFramebufferCreateInfo ppFbInfo{};
+        ppFbInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+        ppFbInfo.renderPass = postProcessRenderPass;
+        ppFbInfo.attachmentCount = 1;
+        ppFbInfo.pAttachments = &swapChainImageViews[i];
+        ppFbInfo.width = swapChainExtent.width;
+        ppFbInfo.height = swapChainExtent.height;
+        ppFbInfo.layers = 1;
+
+        if (vkCreateFramebuffer(device, &ppFbInfo, nullptr, &postProcessSwapchainFramebuffers[i]) != VK_SUCCESS) {
+            throw std::runtime_error("Failed to create post-process swapchain framebuffer");
+        }
+    }
+
+    // Create sampler for post-process textures
+    VkSamplerCreateInfo samplerInfo{};
+    samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    samplerInfo.magFilter = VK_FILTER_LINEAR;
+    samplerInfo.minFilter = VK_FILTER_LINEAR;
+    samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    samplerInfo.anisotropyEnable = VK_FALSE;
+    samplerInfo.maxAnisotropy = 1.0f;
+    samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+    samplerInfo.unnormalizedCoordinates = VK_FALSE;
+    samplerInfo.compareEnable = VK_FALSE;
+    samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+
+    if (vkCreateSampler(device, &samplerInfo, nullptr, &postProcessSampler) != VK_SUCCESS) {
+        throw std::runtime_error("Failed to create post-process sampler");
+    }
+
+    // Create descriptor set layout for post-process
+    VkDescriptorSetLayoutBinding samplerLayoutBinding{};
+    samplerLayoutBinding.binding = 0;
+    samplerLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    samplerLayoutBinding.descriptorCount = 1;
+    samplerLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    samplerLayoutBinding.pImmutableSamplers = nullptr;
+
+    VkDescriptorSetLayoutCreateInfo layoutInfo{};
+    layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    layoutInfo.bindingCount = 1;
+    layoutInfo.pBindings = &samplerLayoutBinding;
+
+    if (vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &postProcessDescriptorLayout) != VK_SUCCESS) {
+        throw std::runtime_error("Failed to create post-process descriptor set layout");
+    }
+
+    // Create descriptor pool for post-process
+    VkDescriptorPoolSize poolSize{};
+    poolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    poolSize.descriptorCount = 2; // One for offscreen, one for ping-pong
+
+    VkDescriptorPoolCreateInfo poolInfo{};
+    poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    poolInfo.poolSizeCount = 1;
+    poolInfo.pPoolSizes = &poolSize;
+    poolInfo.maxSets = 2;
+
+    if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &postProcessDescriptorPool) != VK_SUCCESS) {
+        throw std::runtime_error("Failed to create post-process descriptor pool");
+    }
+
+    // Allocate descriptor sets
+    std::array<VkDescriptorSetLayout, 2> layouts = {postProcessDescriptorLayout, postProcessDescriptorLayout};
+    VkDescriptorSetAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    allocInfo.descriptorPool = postProcessDescriptorPool;
+    allocInfo.descriptorSetCount = 2;
+    allocInfo.pSetLayouts = layouts.data();
+
+    std::array<VkDescriptorSet, 2> descriptorSetsArray;
+    if (vkAllocateDescriptorSets(device, &allocInfo, descriptorSetsArray.data()) != VK_SUCCESS) {
+        throw std::runtime_error("Failed to allocate post-process descriptor sets");
+    }
+    postProcessDescriptorSet = descriptorSetsArray[0];
+    pingPongDescriptorSet = descriptorSetsArray[1];
+
+    // Update descriptor sets
+    VkDescriptorImageInfo offscreenImageInfo{};
+    offscreenImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    offscreenImageInfo.imageView = offscreenColorView;
+    offscreenImageInfo.sampler = postProcessSampler;
+
+    VkDescriptorImageInfo pingPongImageInfo{};
+    pingPongImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    pingPongImageInfo.imageView = pingPongView;
+    pingPongImageInfo.sampler = postProcessSampler;
+
+    std::array<VkWriteDescriptorSet, 2> descriptorWrites{};
+    descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    descriptorWrites[0].dstSet = postProcessDescriptorSet;
+    descriptorWrites[0].dstBinding = 0;
+    descriptorWrites[0].dstArrayElement = 0;
+    descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    descriptorWrites[0].descriptorCount = 1;
+    descriptorWrites[0].pImageInfo = &offscreenImageInfo;
+
+    descriptorWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    descriptorWrites[1].dstSet = pingPongDescriptorSet;
+    descriptorWrites[1].dstBinding = 0;
+    descriptorWrites[1].dstArrayElement = 0;
+    descriptorWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    descriptorWrites[1].descriptorCount = 1;
+    descriptorWrites[1].pImageInfo = &pingPongImageInfo;
+
+    vkUpdateDescriptorSets(device, static_cast<uint32_t>(descriptorWrites.size()), descriptorWrites.data(), 0, nullptr);
+
+    // Create post-process pipelines now that descriptor layout exists
+    createPostProcessPipelines();
+}
+
+void VulkanRenderer::destroyPostProcessResources()
+{
+    if (postProcessDescriptorPool != VK_NULL_HANDLE) {
+        vkDestroyDescriptorPool(device, postProcessDescriptorPool, nullptr);
+        postProcessDescriptorPool = VK_NULL_HANDLE;
+        postProcessDescriptorSet = VK_NULL_HANDLE;
+        pingPongDescriptorSet = VK_NULL_HANDLE;
+    }
+    if (postProcessDescriptorLayout != VK_NULL_HANDLE) {
+        vkDestroyDescriptorSetLayout(device, postProcessDescriptorLayout, nullptr);
+        postProcessDescriptorLayout = VK_NULL_HANDLE;
+    }
+    if (postProcessSampler != VK_NULL_HANDLE) {
+        vkDestroySampler(device, postProcessSampler, nullptr);
+        postProcessSampler = VK_NULL_HANDLE;
+    }
+    if (offscreenFramebuffer != VK_NULL_HANDLE) {
+        vkDestroyFramebuffer(device, offscreenFramebuffer, nullptr);
+        offscreenFramebuffer = VK_NULL_HANDLE;
+    }
+    if (pingPongFramebuffer != VK_NULL_HANDLE) {
+        vkDestroyFramebuffer(device, pingPongFramebuffer, nullptr);
+        pingPongFramebuffer = VK_NULL_HANDLE;
+    }
+    for (auto fb : postProcessSwapchainFramebuffers) {
+        if (fb != VK_NULL_HANDLE) {
+            vkDestroyFramebuffer(device, fb, nullptr);
+        }
+    }
+    postProcessSwapchainFramebuffers.clear();
+    if (offscreenColorView != VK_NULL_HANDLE) {
+        vkDestroyImageView(device, offscreenColorView, nullptr);
+        offscreenColorView = VK_NULL_HANDLE;
+    }
+    if (offscreenColorImage != VK_NULL_HANDLE) {
+        vkDestroyImage(device, offscreenColorImage, nullptr);
+        offscreenColorImage = VK_NULL_HANDLE;
+    }
+    if (offscreenColorMemory != VK_NULL_HANDLE) {
+        vkFreeMemory(device, offscreenColorMemory, nullptr);
+        offscreenColorMemory = VK_NULL_HANDLE;
+    }
+    if (offscreenDepthView != VK_NULL_HANDLE) {
+        vkDestroyImageView(device, offscreenDepthView, nullptr);
+        offscreenDepthView = VK_NULL_HANDLE;
+    }
+    if (offscreenDepthImage != VK_NULL_HANDLE) {
+        vkDestroyImage(device, offscreenDepthImage, nullptr);
+        offscreenDepthImage = VK_NULL_HANDLE;
+    }
+    if (offscreenDepthMemory != VK_NULL_HANDLE) {
+        vkFreeMemory(device, offscreenDepthMemory, nullptr);
+        offscreenDepthMemory = VK_NULL_HANDLE;
+    }
+    if (pingPongView != VK_NULL_HANDLE) {
+        vkDestroyImageView(device, pingPongView, nullptr);
+        pingPongView = VK_NULL_HANDLE;
+    }
+    if (pingPongImage != VK_NULL_HANDLE) {
+        vkDestroyImage(device, pingPongImage, nullptr);
+        pingPongImage = VK_NULL_HANDLE;
+    }
+    if (pingPongMemory != VK_NULL_HANDLE) {
+        vkFreeMemory(device, pingPongMemory, nullptr);
+        pingPongMemory = VK_NULL_HANDLE;
+    }
+    // Note: blurVerticalPipeline and blitPipeline point to the same handle as blurHorizontalPipeline
+    // so we only destroy blurHorizontalPipeline and null all three
+    if (blurHorizontalPipeline != VK_NULL_HANDLE) {
+        vkDestroyPipeline(device, blurHorizontalPipeline, nullptr);
+        blurHorizontalPipeline = VK_NULL_HANDLE;
+        blurVerticalPipeline = VK_NULL_HANDLE;
+        blitPipeline = VK_NULL_HANDLE;
+    }
+    if (postProcessPipelineLayout != VK_NULL_HANDLE) {
+        vkDestroyPipelineLayout(device, postProcessPipelineLayout, nullptr);
+        postProcessPipelineLayout = VK_NULL_HANDLE;
+    }
+    // Note: postProcessRenderPass is NOT destroyed here because it's managed by
+    // createPostProcessRenderPass() and destroyed in cleanup(). This function
+    // is called during recreation (e.g., window resize) where we want to keep the render pass.
+}
+
+namespace {
+std::vector<char> readShaderFile(const std::filesystem::path& filename)
+{
+    std::ifstream file(filename, std::ios::ate | std::ios::binary);
+    if (!file.is_open()) {
+        throw std::runtime_error("Failed to open shader file " + filename.string());
+    }
+    const size_t fileSize = static_cast<size_t>(file.tellg());
+    std::vector<char> buffer(fileSize);
+    file.seekg(0);
+    file.read(buffer.data(), fileSize);
+    return buffer;
+}
+} // anonymous namespace
+
+void VulkanRenderer::createPostProcessPipelines()
+{
+    // Push constants for blur parameters
+    VkPushConstantRange pushConstantRange{};
+    pushConstantRange.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    pushConstantRange.offset = 0;
+    pushConstantRange.size = sizeof(float) * 8; // texelSize(2) + direction(2) + radius + sigma + pad(2)
+
+    // Create pipeline layout
+    VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
+    pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    pipelineLayoutInfo.setLayoutCount = 1;
+    pipelineLayoutInfo.pSetLayouts = &postProcessDescriptorLayout;
+    pipelineLayoutInfo.pushConstantRangeCount = 1;
+    pipelineLayoutInfo.pPushConstantRanges = &pushConstantRange;
+
+    if (vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &postProcessPipelineLayout) != VK_SUCCESS) {
+        throw std::runtime_error("Failed to create post-process pipeline layout");
+    }
+
+    // Load shaders
+    std::filesystem::path shaderPath = SHADER_BINARY_DIR;
+    std::filesystem::path postShaderPath = shaderPath / "post";
+    
+    // Try post subdirectory first, fall back to main shader directory
+    std::filesystem::path vertPath = postShaderPath / "fullscreen.vert.spv";
+    std::filesystem::path fragPath = postShaderPath / "blur.frag.spv";
+    if (!std::filesystem::exists(vertPath)) {
+        vertPath = shaderPath / "fullscreen.vert.spv";
+    }
+    if (!std::filesystem::exists(fragPath)) {
+        fragPath = shaderPath / "blur.frag.spv";
+    }
+    
+    auto vertShaderCode = readShaderFile(vertPath);
+    auto blurShaderCode = readShaderFile(fragPath);
+
+    VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
+    VkShaderModule blurShaderModule = createShaderModule(blurShaderCode);
+
+    VkPipelineShaderStageCreateInfo vertShaderStageInfo{};
+    vertShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    vertShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
+    vertShaderStageInfo.module = vertShaderModule;
+    vertShaderStageInfo.pName = "main";
+
+    VkPipelineShaderStageCreateInfo fragShaderStageInfo{};
+    fragShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    fragShaderStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    fragShaderStageInfo.module = blurShaderModule;
+    fragShaderStageInfo.pName = "main";
+
+    std::array<VkPipelineShaderStageCreateInfo, 2> shaderStages = {vertShaderStageInfo, fragShaderStageInfo};
+
+    // No vertex input for fullscreen triangle
+    VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
+    vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+
+    VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
+    inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    inputAssembly.primitiveRestartEnable = VK_FALSE;
+
+    VkPipelineViewportStateCreateInfo viewportState{};
+    viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    viewportState.viewportCount = 1;
+    viewportState.scissorCount = 1;
+
+    VkPipelineRasterizationStateCreateInfo rasterizer{};
+    rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    rasterizer.depthClampEnable = VK_FALSE;
+    rasterizer.rasterizerDiscardEnable = VK_FALSE;
+    rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+    rasterizer.lineWidth = 1.0f;
+    rasterizer.cullMode = VK_CULL_MODE_NONE;
+    rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    rasterizer.depthBiasEnable = VK_FALSE;
+
+    VkPipelineMultisampleStateCreateInfo multisampling{};
+    multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    multisampling.sampleShadingEnable = VK_FALSE;
+    multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+    VkPipelineColorBlendAttachmentState colorBlendAttachment{};
+    colorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                                          VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    colorBlendAttachment.blendEnable = VK_FALSE;
+
+    VkPipelineColorBlendStateCreateInfo colorBlending{};
+    colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    colorBlending.logicOpEnable = VK_FALSE;
+    colorBlending.attachmentCount = 1;
+    colorBlending.pAttachments = &colorBlendAttachment;
+
+    std::vector<VkDynamicState> dynamicStates = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+    VkPipelineDynamicStateCreateInfo dynamicState{};
+    dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    dynamicState.dynamicStateCount = static_cast<uint32_t>(dynamicStates.size());
+    dynamicState.pDynamicStates = dynamicStates.data();
+
+    VkGraphicsPipelineCreateInfo pipelineInfo{};
+    pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    pipelineInfo.stageCount = 2;
+    pipelineInfo.pStages = shaderStages.data();
+    pipelineInfo.pVertexInputState = &vertexInputInfo;
+    pipelineInfo.pInputAssemblyState = &inputAssembly;
+    pipelineInfo.pViewportState = &viewportState;
+    pipelineInfo.pRasterizationState = &rasterizer;
+    pipelineInfo.pMultisampleState = &multisampling;
+    pipelineInfo.pColorBlendState = &colorBlending;
+    pipelineInfo.pDynamicState = &dynamicState;
+    pipelineInfo.layout = postProcessPipelineLayout;
+    pipelineInfo.renderPass = postProcessRenderPass;
+    pipelineInfo.subpass = 0;
+
+    if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &blurHorizontalPipeline) != VK_SUCCESS) {
+        throw std::runtime_error("Failed to create blur pipeline");
+    }
+
+    // Use same pipeline for vertical pass (direction is passed via push constants)
+    blurVerticalPipeline = blurHorizontalPipeline;
+    blitPipeline = blurHorizontalPipeline;
+
+    vkDestroyShaderModule(device, blurShaderModule, nullptr);
+    vkDestroyShaderModule(device, vertShaderModule, nullptr);
 }
 
 void VulkanRenderer::createDescriptorSetLayout()
@@ -2005,7 +2481,7 @@ void VulkanRenderer::destroyDeformableBuffers()
     deformableDraws.clear();
 }
 
-void VulkanRenderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex, float deltaSeconds)
+void VulkanRenderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex, float /*deltaSeconds*/)
 {
     VkCommandBufferBeginInfo beginInfo{};
     beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -2316,10 +2792,39 @@ void VulkanRenderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t
 
     }
 
+    // Determine if we should use offscreen rendering for post-processing
+    const bool usePostProcess = blurSettings.enabled && 
+                                offscreenFramebuffer != VK_NULL_HANDLE && 
+                                blurHorizontalPipeline != VK_NULL_HANDLE;
+
+    // Transition offscreen image if needed for post-processing
+    if (usePostProcess && !offscreenImageReady) {
+        VkImageMemoryBarrier offscreenBarrier{};
+        offscreenBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        offscreenBarrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        offscreenBarrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        offscreenBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        offscreenBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        offscreenBarrier.image = offscreenColorImage;
+        offscreenBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        offscreenBarrier.subresourceRange.baseMipLevel = 0;
+        offscreenBarrier.subresourceRange.levelCount = 1;
+        offscreenBarrier.subresourceRange.baseArrayLayer = 0;
+        offscreenBarrier.subresourceRange.layerCount = 1;
+        offscreenBarrier.srcAccessMask = 0;
+        offscreenBarrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+
+        vkCmdPipelineBarrier(commandBuffer,
+                             VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                             VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                             0, 0, nullptr, 0, nullptr, 1, &offscreenBarrier);
+    }
+
     VkRenderPassBeginInfo renderPassInfo{};
     renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
     renderPassInfo.renderPass = renderPass;
-    renderPassInfo.framebuffer = swapChainFramebuffers[imageIndex];
+    // Render to offscreen if post-processing, else directly to swapchain
+    renderPassInfo.framebuffer = usePostProcess ? offscreenFramebuffer : swapChainFramebuffers[imageIndex];
     renderPassInfo.renderArea.offset = {0, 0};
     renderPassInfo.renderArea.extent = swapChainExtent;
 
@@ -2359,8 +2864,8 @@ void VulkanRenderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t
                                 0, 1, &descriptorSets[imageIndex], 0, nullptr);
         bindMaterialSet(defaultTexture.descriptorSet);
 
-        for (const auto& instance : particleMeshInstances) {
-            const auto& render = instance.render;
+        for (const auto& meshInstance : particleMeshInstances) {
+            const auto& render = meshInstance.render;
             if (!render.visible) {
                 continue;
             }
@@ -2371,7 +2876,7 @@ void VulkanRenderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t
                 vkCmdBindIndexBuffer(commandBuffer, indexBuffer, 0, VK_INDEX_TYPE_UINT16);
                 const auto& texture = getOrCreateTexture(render);
                 bindMaterialSet(texture.descriptorSet);
-                const auto push = buildObjectPushConstants(instance.model, render);
+                const auto push = buildObjectPushConstants(meshInstance.model, render);
                 vkCmdPushConstants(commandBuffer, pipelineLayout,
                                    VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                                    0, sizeof(push), &push);
@@ -2392,7 +2897,7 @@ void VulkanRenderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t
                 vkCmdBindIndexBuffer(commandBuffer, meshBuffers.indexBuffer, 0, meshBuffers.indexType);
                 const auto& texture = getOrCreateTexture(render);
                 bindMaterialSet(texture.descriptorSet);
-                const auto push = buildObjectPushConstants(instance.model, render);
+                const auto push = buildObjectPushConstants(meshInstance.model, render);
                 vkCmdPushConstants(commandBuffer, pipelineLayout,
                                    VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                                    0, sizeof(push), &push);
@@ -2406,7 +2911,7 @@ void VulkanRenderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t
                 vkCmdBindVertexBuffers(commandBuffer, 0, 1, lineBuffers, lineOffsets);
                 const auto& texture = getOrCreateTexture(render);
                 bindMaterialSet(texture.descriptorSet);
-                const auto push = buildObjectPushConstants(instance.model, render);
+                const auto push = buildObjectPushConstants(meshInstance.model, render);
                 vkCmdPushConstants(commandBuffer, pipelineLayout,
                                    VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                                    0, sizeof(push), &push);
@@ -2528,6 +3033,188 @@ void VulkanRenderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t
 
     vkCmdEndRenderPass(commandBuffer);
 
+    // Apply blur post-processing if enabled
+    if (usePostProcess) {
+        offscreenImageReady = true;
+
+        // Push constant structure for blur shader
+        struct BlurPushConstants {
+            float texelSizeX;
+            float texelSizeY;
+            float directionX;
+            float directionY;
+            float radius;
+            float sigma;
+            float pad0;
+            float pad1;
+        };
+
+        const float texelSizeX = 1.0f / static_cast<float>(swapChainExtent.width);
+        const float texelSizeY = 1.0f / static_cast<float>(swapChainExtent.height);
+
+        VkViewport viewport{};
+        viewport.x = 0.0f;
+        viewport.y = 0.0f;
+        viewport.width = static_cast<float>(swapChainExtent.width);
+        viewport.height = static_cast<float>(swapChainExtent.height);
+        viewport.minDepth = 0.0f;
+        viewport.maxDepth = 1.0f;
+
+        VkRect2D scissor{};
+        scissor.offset = {0, 0};
+        scissor.extent = swapChainExtent;
+
+        // ============ Pass 1: Horizontal blur (offscreen -> pingPong) ============
+        
+        // Transition offscreen to shader read
+        VkImageMemoryBarrier offscreenToRead{};
+        offscreenToRead.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        offscreenToRead.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        offscreenToRead.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        offscreenToRead.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        offscreenToRead.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        offscreenToRead.image = offscreenColorImage;
+        offscreenToRead.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        offscreenToRead.subresourceRange.baseMipLevel = 0;
+        offscreenToRead.subresourceRange.levelCount = 1;
+        offscreenToRead.subresourceRange.baseArrayLayer = 0;
+        offscreenToRead.subresourceRange.layerCount = 1;
+        offscreenToRead.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        offscreenToRead.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+        // Transition pingPong to color attachment
+        VkImageMemoryBarrier pingPongToWrite{};
+        pingPongToWrite.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        pingPongToWrite.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        pingPongToWrite.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        pingPongToWrite.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        pingPongToWrite.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        pingPongToWrite.image = pingPongImage;
+        pingPongToWrite.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        pingPongToWrite.subresourceRange.baseMipLevel = 0;
+        pingPongToWrite.subresourceRange.levelCount = 1;
+        pingPongToWrite.subresourceRange.baseArrayLayer = 0;
+        pingPongToWrite.subresourceRange.layerCount = 1;
+        pingPongToWrite.srcAccessMask = 0;
+        pingPongToWrite.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+
+        std::array<VkImageMemoryBarrier, 2> pass1Barriers = {offscreenToRead, pingPongToWrite};
+        vkCmdPipelineBarrier(commandBuffer,
+                             VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                             0, 0, nullptr, 0, nullptr,
+                             static_cast<uint32_t>(pass1Barriers.size()), pass1Barriers.data());
+
+        // Begin horizontal blur pass
+        VkRenderPassBeginInfo hPassInfo{};
+        hPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+        hPassInfo.renderPass = postProcessRenderPass;
+        hPassInfo.framebuffer = pingPongFramebuffer;
+        hPassInfo.renderArea.offset = {0, 0};
+        hPassInfo.renderArea.extent = swapChainExtent;
+        VkClearValue hClear{};
+        hClear.color = {{0.0f, 0.0f, 0.0f, 1.0f}};
+        hPassInfo.clearValueCount = 1;
+        hPassInfo.pClearValues = &hClear;
+
+        vkCmdBeginRenderPass(commandBuffer, &hPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, blurHorizontalPipeline);
+        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, postProcessPipelineLayout,
+                                0, 1, &postProcessDescriptorSet, 0, nullptr);
+        vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
+        vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
+
+        BlurPushConstants hPush{};
+        hPush.texelSizeX = texelSizeX;
+        hPush.texelSizeY = texelSizeY;
+        hPush.directionX = 1.0f;  // Horizontal
+        hPush.directionY = 0.0f;
+        hPush.radius = blurSettings.radius;
+        hPush.sigma = blurSettings.sigma;
+        vkCmdPushConstants(commandBuffer, postProcessPipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT,
+                           0, sizeof(hPush), &hPush);
+        vkCmdDraw(commandBuffer, 3, 1, 0, 0); // Fullscreen triangle
+        vkCmdEndRenderPass(commandBuffer);
+
+        // ============ Pass 2: Vertical blur (pingPong -> swapchain) ============
+
+        // Transition pingPong to shader read
+        VkImageMemoryBarrier pingPongToRead{};
+        pingPongToRead.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        pingPongToRead.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        pingPongToRead.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        pingPongToRead.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        pingPongToRead.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        pingPongToRead.image = pingPongImage;
+        pingPongToRead.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        pingPongToRead.subresourceRange.baseMipLevel = 0;
+        pingPongToRead.subresourceRange.levelCount = 1;
+        pingPongToRead.subresourceRange.baseArrayLayer = 0;
+        pingPongToRead.subresourceRange.layerCount = 1;
+        pingPongToRead.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        pingPongToRead.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+        vkCmdPipelineBarrier(commandBuffer,
+                             VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                             0, 0, nullptr, 0, nullptr, 1, &pingPongToRead);
+
+        // Begin vertical blur pass (render to swapchain)
+        VkRenderPassBeginInfo vPassInfo{};
+        vPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+        vPassInfo.renderPass = postProcessRenderPass;
+        vPassInfo.framebuffer = postProcessSwapchainFramebuffers[imageIndex];
+        vPassInfo.renderArea.offset = {0, 0};
+        vPassInfo.renderArea.extent = swapChainExtent;
+        VkClearValue vClear{};
+        vClear.color = {{0.0f, 0.0f, 0.0f, 1.0f}};
+        vPassInfo.clearValueCount = 1;
+        vPassInfo.pClearValues = &vClear;
+
+        vkCmdBeginRenderPass(commandBuffer, &vPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, blurVerticalPipeline);
+        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, postProcessPipelineLayout,
+                                0, 1, &pingPongDescriptorSet, 0, nullptr);
+        vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
+        vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
+
+        BlurPushConstants vPush{};
+        vPush.texelSizeX = texelSizeX;
+        vPush.texelSizeY = texelSizeY;
+        vPush.directionX = 0.0f;
+        vPush.directionY = 1.0f;  // Vertical
+        vPush.radius = blurSettings.radius;
+        vPush.sigma = blurSettings.sigma;
+        vkCmdPushConstants(commandBuffer, postProcessPipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT,
+                           0, sizeof(vPush), &vPush);
+        vkCmdDraw(commandBuffer, 3, 1, 0, 0); // Fullscreen triangle
+        vkCmdEndRenderPass(commandBuffer);
+
+        // Transition swapchain image to present layout
+        VkImageMemoryBarrier swapchainToPresent{};
+        swapchainToPresent.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        swapchainToPresent.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        swapchainToPresent.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+        swapchainToPresent.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        swapchainToPresent.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        swapchainToPresent.image = swapChainImages[imageIndex];
+        swapchainToPresent.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        swapchainToPresent.subresourceRange.baseMipLevel = 0;
+        swapchainToPresent.subresourceRange.levelCount = 1;
+        swapchainToPresent.subresourceRange.baseArrayLayer = 0;
+        swapchainToPresent.subresourceRange.layerCount = 1;
+        swapchainToPresent.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        swapchainToPresent.dstAccessMask = 0;
+
+        vkCmdPipelineBarrier(commandBuffer,
+                             VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                             VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                             0, 0, nullptr, 0, nullptr, 1, &swapchainToPresent);
+
+        // Reset offscreen ready flag for layout transitions
+        offscreenImageReady = false;
+    }
+
     captureSwapchainImage(commandBuffer, imageIndex);
 
     if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
@@ -2639,7 +3326,7 @@ void VulkanRenderer::finalizeCapture(uint32_t imageIndex)
     captureRequested = false;
 }
 
-void VulkanRenderer::populateCameraBufferObject(const vkengine::Camera& camera,
+void VulkanRenderer::populateCameraBufferObject(const vkengine::Camera& /*camera*/,
                                                const glm::mat4& view,
                                                const glm::mat4& proj,
                                                const glm::vec3& cameraPosition,
@@ -2751,6 +3438,10 @@ void VulkanRenderer::populateCameraBufferObject(const vkengine::Camera& camera,
                               fogSettings.heightFalloff,
                               fogSettings.heightOffset,
                               fogSettings.startDistance);
+    ubo.blurParams = glm::vec4(blurSettings.enabled ? 1.0f : 0.0f,
+                               blurSettings.radius,
+                               blurSettings.sigma,
+                               static_cast<float>(blurSettings.type));
 
     glm::vec3 lightUp = glm::vec3(0.0f, 1.0f, 0.0f);
     const float alignment = std::abs(glm::dot(glm::normalize(lightTarget - farLightPos), lightUp));
@@ -2846,7 +3537,7 @@ void VulkanRenderer::updateUniformBuffer(uint32_t currentImage)
     }
 }
 
-void VulkanRenderer::updateParticleVertexBuffer(float deltaSeconds)
+void VulkanRenderer::updateParticleVertexBuffer(float /*deltaSeconds*/)
 {
     particleVertexCount = 0;
     cpuParticleVertices.clear();

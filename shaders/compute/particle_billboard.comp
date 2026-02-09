@@ -1,0 +1,78 @@
+#version 460
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+struct BodyState {
+    vec4 positionMass;
+    vec4 velocityAge;
+};
+
+layout(std430, binding = 0) readonly buffer ParticleState {
+    BodyState bodies[];
+} stateBuffer;
+
+layout(std430, binding = 1) buffer ParticleVertices {
+    float vertexData[];
+} vertexBuffer;
+
+layout(push_constant) uniform BillboardParams {
+    vec4 cameraRight;
+    vec4 cameraUp;
+    vec4 startColor;
+    vec4 endColor;
+    float particleScale;
+    float colorCycle;
+    uint  particleCount;
+    float padding;
+} params;
+
+const uint VERTICES_PER_PARTICLE = 6u;
+const uint FLOATS_PER_VERTEX = 10u;
+
+void storeVertex(uint vertexIndex, vec3 position, vec2 uv, vec4 color, float shape)
+{
+    uint offset = vertexIndex * FLOATS_PER_VERTEX;
+    vertexBuffer.vertexData[offset + 0u] = position.x;
+    vertexBuffer.vertexData[offset + 1u] = position.y;
+    vertexBuffer.vertexData[offset + 2u] = position.z;
+    vertexBuffer.vertexData[offset + 3u] = uv.x;
+    vertexBuffer.vertexData[offset + 4u] = uv.y;
+    vertexBuffer.vertexData[offset + 5u] = color.x;
+    vertexBuffer.vertexData[offset + 6u] = color.y;
+    vertexBuffer.vertexData[offset + 7u] = color.z;
+    vertexBuffer.vertexData[offset + 8u] = color.w;
+    vertexBuffer.vertexData[offset + 9u] = shape;
+}
+
+void main()
+{
+    uint particleIndex = gl_GlobalInvocationID.x;
+    if (particleIndex >= params.particleCount) {
+        return;
+    }
+
+    BodyState state = stateBuffer.bodies[particleIndex];
+    vec3 center = state.positionMass.xyz;
+    float scale = max(0.01f, params.particleScale * 0.5f);
+    vec3 right = params.cameraRight.xyz * scale;
+    vec3 up = params.cameraUp.xyz * scale;
+
+    float normalizedAge = params.colorCycle > 0.0f
+                              ? clamp(state.velocityAge.w / params.colorCycle, 0.0f, 1.0f)
+                              : 1.0f;
+    vec4 color = mix(params.startColor, params.endColor, normalizedAge);
+
+    vec3 p0 = center - right + up;
+    vec3 p1 = center + right + up;
+    vec3 p2 = center + right - up;
+    vec3 p3 = center - right - up;
+
+    uint vertexBase = particleIndex * VERTICES_PER_PARTICLE;
+    const float shape = 0.0f;
+    storeVertex(vertexBase + 0u, p0, vec2(0.0f, 1.0f), color, shape);
+    storeVertex(vertexBase + 1u, p2, vec2(1.0f, 0.0f), color, shape);
+    storeVertex(vertexBase + 2u, p1, vec2(1.0f, 1.0f), color, shape);
+    storeVertex(vertexBase + 3u, p0, vec2(0.0f, 1.0f), color, shape);
+    storeVertex(vertexBase + 4u, p3, vec2(0.0f, 0.0f), color, shape);
+    storeVertex(vertexBase + 5u, p2, vec2(1.0f, 0.0f), color, shape);
+}

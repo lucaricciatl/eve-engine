@@ -1,0 +1,56 @@
+#version 460
+
+// Bitonic sort for sorting cell entries by hash
+// Sorts in-place for GPU-efficient parallel sorting
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+struct CellEntry {
+    uint objectIndex;
+    uint cellHash;
+};
+
+layout(std430, binding = 0) buffer CellEntryBuffer {
+    CellEntry entries[];
+} cellEntries;
+
+layout(push_constant) uniform SortParams {
+    uint elementCount;
+    uint stage;          // Current stage of bitonic sort (0 to log2(n)-1)
+    uint passIndex;      // Current pass within stage
+    uint ascending;      // Sort direction (1 = ascending)
+} params;
+
+shared CellEntry sharedEntries[512];
+
+// Compare function for sorting by cell hash, then by object index for stability
+bool shouldSwap(CellEntry a, CellEntry b, bool ascending) {
+    if (a.cellHash != b.cellHash) {
+        return ascending ? (a.cellHash > b.cellHash) : (a.cellHash < b.cellHash);
+    }
+    return ascending ? (a.objectIndex > b.objectIndex) : (a.objectIndex < b.objectIndex);
+}
+
+void main() {
+    uint globalId = gl_GlobalInvocationID.x;
+    
+    // Each thread handles one comparison-swap
+    uint j = params.stage;
+    uint k = params.passIndex;
+    
+    // Calculate which elements this thread compares
+    uint ixj = globalId ^ k;
+    
+    if (ixj > globalId && ixj < params.elementCount && globalId < params.elementCount) {
+        CellEntry a = cellEntries.entries[globalId];
+        CellEntry b = cellEntries.entries[ixj];
+        
+        // Determine sort direction based on bitonic sequence
+        bool ascending = ((globalId & j) == 0u) == (params.ascending == 1u);
+        
+        if (shouldSwap(a, b, ascending)) {
+            cellEntries.entries[globalId] = b;
+            cellEntries.entries[ixj] = a;
+        }
+    }
+}

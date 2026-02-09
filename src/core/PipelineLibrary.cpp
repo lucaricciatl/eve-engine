@@ -50,8 +50,10 @@ CubePipelineOutputs createCubePipelines(const CubePipelineInputs& inputs)
     }
 
     const auto shaderDir = inputs.shaderDirectory;
-    auto vertShaderCode = readFile(shaderDir / "cube.vert.spv");
-    auto fragShaderCode = readFile(shaderDir / "cube.frag.spv");
+    const auto graphicsDir = shaderDir / "graphics";
+    const auto computeDir = shaderDir / "compute";
+    auto vertShaderCode = readFile(graphicsDir / "cube.vert.spv");
+    auto fragShaderCode = readFile(graphicsDir / "cube.frag.spv");
 
     VkShaderModule vertShaderModule = createShaderModule(inputs.device, vertShaderCode);
     VkShaderModule fragShaderModule = createShaderModule(inputs.device, fragShaderCode);
@@ -206,7 +208,7 @@ CubePipelineOutputs createCubePipelines(const CubePipelineInputs& inputs)
     };
 
     for (size_t i = 1; i < kStylePipelineCount; ++i) {
-        auto styleCode = readFile(shaderDir / kStyleFragFiles[i]);
+        auto styleCode = readFile(graphicsDir / kStyleFragFiles[i]);
         VkShaderModule styleFragModule = createShaderModule(inputs.device, styleCode);
 
         VkPipelineShaderStageCreateInfo styleFragStage = fragShaderStageInfo;
@@ -252,7 +254,7 @@ CubePipelineOutputs createCubePipelines(const CubePipelineInputs& inputs)
     vkDestroyShaderModule(inputs.device, vertShaderModule, nullptr);
 
     // Shadow pipeline
-    auto shadowVertCode = readFile(shaderDir / "shadow.vert.spv");
+    auto shadowVertCode = readFile(graphicsDir / "shadow.vert.spv");
     VkShaderModule shadowVertModule = createShaderModule(inputs.device, shadowVertCode);
 
     VkPipelineShaderStageCreateInfo shadowStage{};
@@ -316,8 +318,8 @@ CubePipelineOutputs createCubePipelines(const CubePipelineInputs& inputs)
     vkDestroyShaderModule(inputs.device, shadowVertModule, nullptr);
 
     // Particle pipeline
-    auto particleVertCode = readFile(shaderDir / "particle.vert.spv");
-    auto particleFragCode = readFile(shaderDir / "particle.frag.spv");
+    auto particleVertCode = readFile(graphicsDir / "particle.vert.spv");
+    auto particleFragCode = readFile(graphicsDir / "particle.frag.spv");
     VkShaderModule particleVertModule = createShaderModule(inputs.device, particleVertCode);
     VkShaderModule particleFragModule = createShaderModule(inputs.device, particleFragCode);
 

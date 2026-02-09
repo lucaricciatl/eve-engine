@@ -112,27 +112,56 @@ set(BUILD_TESTS OFF CACHE BOOL "" FORCE)
 add_subdirectory(${VULKAN_LOADER_ROOT} ${CMAKE_BINARY_DIR}/external/Vulkan-Loader)
 
 set(SHADER_SOURCES
-    ${CMAKE_SOURCE_DIR}/shaders/cube.vert
-    ${CMAKE_SOURCE_DIR}/shaders/cube.frag
-    ${CMAKE_SOURCE_DIR}/shaders/toon.frag
-    ${CMAKE_SOURCE_DIR}/shaders/rim.frag
-    ${CMAKE_SOURCE_DIR}/shaders/heat.frag
-    ${CMAKE_SOURCE_DIR}/shaders/gradient.frag
-    ${CMAKE_SOURCE_DIR}/shaders/wireframe.frag
-    ${CMAKE_SOURCE_DIR}/shaders/glow.frag
-    ${CMAKE_SOURCE_DIR}/shaders/shadow.vert
-    ${CMAKE_SOURCE_DIR}/shaders/particle.vert
-    ${CMAKE_SOURCE_DIR}/shaders/particle.frag
-    ${CMAKE_SOURCE_DIR}/shaders/nbody.comp
-    ${CMAKE_SOURCE_DIR}/shaders/particle_billboard.comp
+    # Graphics shaders (vertex + fragment)
+    ${CMAKE_SOURCE_DIR}/shaders/graphics/cube.vert
+    ${CMAKE_SOURCE_DIR}/shaders/graphics/cube.frag
+    ${CMAKE_SOURCE_DIR}/shaders/graphics/toon.frag
+    ${CMAKE_SOURCE_DIR}/shaders/graphics/rim.frag
+    ${CMAKE_SOURCE_DIR}/shaders/graphics/heat.frag
+    ${CMAKE_SOURCE_DIR}/shaders/graphics/gradient.frag
+    ${CMAKE_SOURCE_DIR}/shaders/graphics/wireframe.frag
+    ${CMAKE_SOURCE_DIR}/shaders/graphics/glow.frag
+    ${CMAKE_SOURCE_DIR}/shaders/graphics/shadow.vert
+    ${CMAKE_SOURCE_DIR}/shaders/graphics/particle.vert
+    ${CMAKE_SOURCE_DIR}/shaders/graphics/particle.frag
+    # Post-processing shaders
+    ${CMAKE_SOURCE_DIR}/shaders/post/fullscreen.vert
+    ${CMAKE_SOURCE_DIR}/shaders/post/blur.frag
+    ${CMAKE_SOURCE_DIR}/shaders/post/bloom_extract.frag
+    ${CMAKE_SOURCE_DIR}/shaders/post/bloom_blur.frag
+    ${CMAKE_SOURCE_DIR}/shaders/post/bloom_composite.frag
+    ${CMAKE_SOURCE_DIR}/shaders/post/ssao.frag
+    ${CMAKE_SOURCE_DIR}/shaders/post/ssao_blur.frag
+    ${CMAKE_SOURCE_DIR}/shaders/post/tonemapping.frag
+    ${CMAKE_SOURCE_DIR}/shaders/post/color_grading.frag
+    ${CMAKE_SOURCE_DIR}/shaders/post/fxaa.frag
+    ${CMAKE_SOURCE_DIR}/shaders/post/taa.frag
+    ${CMAKE_SOURCE_DIR}/shaders/post/dof.frag
+    ${CMAKE_SOURCE_DIR}/shaders/post/motion_blur.frag
+    ${CMAKE_SOURCE_DIR}/shaders/post/vignette_chromatic.frag
+    # Shadow shaders
+    ${CMAKE_SOURCE_DIR}/shaders/shadow/cascade_shadow.vert
+    ${CMAKE_SOURCE_DIR}/shaders/shadow/cascade_shadow.frag
+    # Compute shaders
+    ${CMAKE_SOURCE_DIR}/shaders/compute/nbody.comp
+    ${CMAKE_SOURCE_DIR}/shaders/compute/particle_billboard.comp
+    ${CMAKE_SOURCE_DIR}/shaders/compute/collision_broad_phase.comp
+    ${CMAKE_SOURCE_DIR}/shaders/compute/collision_broad_phase_write.comp
+    ${CMAKE_SOURCE_DIR}/shaders/compute/collision_narrow_phase.comp
+    ${CMAKE_SOURCE_DIR}/shaders/compute/collision_pair_gen.comp
+    ${CMAKE_SOURCE_DIR}/shaders/compute/collision_prefix_sum.comp
+    ${CMAKE_SOURCE_DIR}/shaders/compute/collision_bitonic_sort.comp
 )
 set(SHADER_OUTPUTS)
 foreach(SHADER_FILE ${SHADER_SOURCES})
     get_filename_component(SHADER_NAME ${SHADER_FILE} NAME)
-    set(SPIRV_FILE ${CMAKE_BINARY_DIR}/shaders/${SHADER_NAME}.spv)
+    # Get relative path from shaders/ directory to preserve subdirectory structure
+    file(RELATIVE_PATH SHADER_REL_PATH ${CMAKE_SOURCE_DIR}/shaders ${SHADER_FILE})
+    get_filename_component(SHADER_SUBDIR ${SHADER_REL_PATH} DIRECTORY)
+    set(SPIRV_FILE ${CMAKE_BINARY_DIR}/shaders/${SHADER_SUBDIR}/${SHADER_NAME}.spv)
     add_custom_command(
         OUTPUT ${SPIRV_FILE}
-        COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/shaders
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/shaders/${SHADER_SUBDIR}
         COMMAND ${GLSLC_EXECUTABLE} -o ${SPIRV_FILE} ${SHADER_FILE}
         DEPENDS ${SHADER_FILE}
         COMMENT "Compiling ${SHADER_NAME}"
@@ -171,6 +200,7 @@ set(CORE_ENGINE_SOURCES
     src/engine/GameEngine.cpp
     src/engine/Material.cpp
     src/engine/PhysicsSystem.cpp
+    src/engine/GpuCollisionSystem.cpp
     src/engine/ParticleSystem.cpp
     src/engine/MolecularDynamics.cpp
     src/engine/InputManager.cpp
@@ -180,6 +210,18 @@ set(CORE_ENGINE_SOURCES
     src/engine/assets/ImageWriter.cpp
     src/engine/assets/TextureLoader.cpp
     src/engine/assets/StbImage.cpp
+    # New engine systems
+    src/engine/Serialization.cpp
+    src/engine/Audio.cpp
+    src/engine/Animation.cpp
+    src/engine/CameraSystem.cpp
+    src/engine/Network.cpp
+    src/engine/DebugTools.cpp
+    src/engine/JobSystem.cpp
+    src/engine/UISystem.cpp
+    src/engine/Colliders.cpp
+    src/engine/AssetPipeline.cpp
+    src/engine/PostProcessing.cpp
     src/core/units/MetricUnits.cpp
     src/core/primitives/PrimitiveGenerator.cpp
     src/core/Vertex.cpp
@@ -281,6 +323,9 @@ target_link_libraries(GlassExample PRIVATE core)
 add_executable(PhysicsExample examples/physics/main.cpp)
 target_link_libraries(PhysicsExample PRIVATE core)
 
+add_executable(GpuCollisionExample examples/gpu_collision/main.cpp)
+target_link_libraries(GpuCollisionExample PRIVATE core)
+
 add_executable(EmittingBodiesExample examples/emitting_bodies/main.cpp)
 target_link_libraries(EmittingBodiesExample PRIVATE core)
 
@@ -310,6 +355,9 @@ target_link_libraries(InAppConsoleExample PRIVATE core)
 add_executable(ReflectionsExample examples/reflections/main.cpp)
 target_link_libraries(ReflectionsExample PRIVATE core)
 
+add_executable(PostProcessingExample examples/post_processing/main.cpp)
+target_link_libraries(PostProcessingExample PRIVATE core)
+
 set(EXAMPLE_TARGETS
     CubeExample
     ParticleExample
@@ -321,6 +369,7 @@ set(EXAMPLE_TARGETS
     LightsExample
     GlassExample
     PhysicsExample
+    GpuCollisionExample
     EmittingBodiesExample
     LatticeExample
     DrawOverlayExample
@@ -331,6 +380,7 @@ set(EXAMPLE_TARGETS
     TerminalAppExample
     InAppConsoleExample
     ReflectionsExample
+    PostProcessingExample
 )
 foreach(example_target IN LISTS EXAMPLE_TARGETS)
     set_property(TARGET ${example_target} PROPERTY FOLDER "examples")
@@ -352,6 +402,7 @@ if(MSVC)
     target_compile_options(MolecularDynamicsExample PRIVATE /W4 /permissive-)
     target_compile_options(LightsExample PRIVATE /W4 /permissive-)
     target_compile_options(GlassExample PRIVATE /W4 /permissive-)
+    target_compile_options(GpuCollisionExample PRIVATE /W4 /permissive-)
     target_compile_options(PhysicsExample PRIVATE /W4 /permissive-)
     target_compile_options(EmittingBodiesExample PRIVATE /W4 /permissive-)
     target_compile_options(LatticeExample PRIVATE /W4 /permissive-)
@@ -362,6 +413,8 @@ if(MSVC)
     target_compile_options(ShaderStylesExample PRIVATE /W4 /permissive-)
     target_compile_options(TerminalAppExample PRIVATE /W4 /permissive-)
     target_compile_options(InAppConsoleExample PRIVATE /W4 /permissive-)
+    target_compile_options(PostProcessingExample PRIVATE /W4 /permissive-)
+    target_compile_options(GpuCollisionExample PRIVATE /W4 /permissive-)
     target_compile_options(ReflectionsExample PRIVATE /W4 /permissive-)
 else()
     target_compile_options(CubeExample PRIVATE -Wall -Wextra -pedantic)
@@ -373,6 +426,7 @@ else()
     target_compile_options(MolecularDynamicsExample PRIVATE -Wall -Wextra -pedantic)
     target_compile_options(LightsExample PRIVATE -Wall -Wextra -pedantic)
     target_compile_options(GlassExample PRIVATE -Wall -Wextra -pedantic)
+    target_compile_options(GpuCollisionExample PRIVATE -Wall -Wextra -pedantic)
     target_compile_options(PhysicsExample PRIVATE -Wall -Wextra -pedantic)
     target_compile_options(EmittingBodiesExample PRIVATE -Wall -Wextra -pedantic)
     target_compile_options(LatticeExample PRIVATE -Wall -Wextra -pedantic)
@@ -383,6 +437,7 @@ else()
     target_compile_options(ShaderStylesExample PRIVATE -Wall -Wextra -pedantic)
     target_compile_options(TerminalAppExample PRIVATE -Wall -Wextra -pedantic)
     target_compile_options(InAppConsoleExample PRIVATE -Wall -Wextra -pedantic)
+    target_compile_options(PostProcessingExample PRIVATE -Wall -Wextra -pedantic)
     target_compile_options(ReflectionsExample PRIVATE -Wall -Wextra -pedantic)
 endif()
 

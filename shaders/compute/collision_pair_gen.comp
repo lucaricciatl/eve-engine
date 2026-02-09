@@ -1,0 +1,89 @@
+#version 460
+
+// Collision pair generation from sorted cell entries
+// Identifies potential collision pairs from objects sharing the same cell
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+struct CellEntry {
+    uint objectIndex;
+    uint cellHash;
+};
+
+struct CollisionPair {
+    uint objectA;
+    uint objectB;
+    uint padding0;
+    uint padding1;
+};
+
+// Input: sorted cell entries (sorted by cellHash)
+layout(std430, binding = 0) readonly buffer CellEntryBuffer {
+    CellEntry entries[];
+} inCellEntries;
+
+// Output: collision pairs
+layout(std430, binding = 1) writeonly buffer PairBuffer {
+    CollisionPair pairs[];
+} outPairs;
+
+// Atomic counter for number of pairs
+layout(std430, binding = 2) buffer CounterBuffer {
+    uint pairCount;
+} counter;
+
+// Cell range buffer: for each cell hash, stores (startIndex, count)
+layout(std430, binding = 3) readonly buffer CellRangeBuffer {
+    uvec2 cellRanges[]; // x = start index, y = count
+} cellRanges;
+
+layout(push_constant) uniform PairGenParams {
+    uint totalEntries;
+    uint maxPairs;
+    uint uniqueCellCount;
+    uint padding;
+} params;
+
+void main() {
+    uint cellIndex = gl_GlobalInvocationID.x;
+    
+    if (cellIndex >= params.uniqueCellCount) {
+        return;
+    }
+    
+    uvec2 range = cellRanges.cellRanges[cellIndex];
+    uint startIdx = range.x;
+    uint count = range.y;
+    
+    // Skip cells with only one object (no collision possible)
+    if (count < 2u) {
+        return;
+    }
+    
+    // Generate all pairs within this cell
+    for (uint i = 0u; i < count; ++i) {
+        uint objA = inCellEntries.entries[startIdx + i].objectIndex;
+        
+        for (uint j = i + 1u; j < count; ++j) {
+            uint objB = inCellEntries.entries[startIdx + j].objectIndex;
+            
+            // Ensure consistent ordering (lower index first)
+            uint pairA = min(objA, objB);
+            uint pairB = max(objA, objB);
+            
+            // Note: This may generate duplicate pairs if objects share multiple cells
+            // Deduplication happens in a later pass or during narrow phase
+            
+            uint pairIndex = atomicAdd(counter.pairCount, 1u);
+            
+            if (pairIndex < params.maxPairs) {
+                CollisionPair pair;
+                pair.objectA = pairA;
+                pair.objectB = pairB;
+                pair.padding0 = 0u;
+                pair.padding1 = 0u;
+                outPairs.pairs[pairIndex] = pair;
+            }
+        }
+    }
+}

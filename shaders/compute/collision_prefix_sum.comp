@@ -1,0 +1,85 @@
+#version 460
+
+// Parallel prefix sum (scan) for computing offsets
+// Uses work-efficient Blelloch scan algorithm
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, binding = 0) buffer DataBuffer {
+    uint data[];
+} dataBuffer;
+
+layout(push_constant) uniform ScanParams {
+    uint elementCount;
+    uint stride;         // For multi-pass: 1 for first pass, then 256, 256*256, etc.
+    uint passIndex;      // 0 = upsweep, 1 = downsweep
+    uint padding;
+} params;
+
+shared uint sharedData[512]; // 2x workgroup size for bank conflict avoidance
+
+void main() {
+    uint localId = gl_LocalInvocationID.x;
+    uint globalId = gl_GlobalInvocationID.x;
+    uint groupId = gl_WorkGroupID.x;
+    
+    // Load data into shared memory (2 elements per thread)
+    uint ai = localId;
+    uint bi = localId + 256u;
+    
+    uint baseOffset = groupId * 512u;
+    
+    if (baseOffset + ai < params.elementCount) {
+        sharedData[ai] = dataBuffer.data[baseOffset + ai];
+    } else {
+        sharedData[ai] = 0u;
+    }
+    
+    if (baseOffset + bi < params.elementCount) {
+        sharedData[bi] = dataBuffer.data[baseOffset + bi];
+    } else {
+        sharedData[bi] = 0u;
+    }
+    
+    barrier();
+    
+    // Up-sweep (reduce) phase
+    uint offset = 1u;
+    for (uint d = 256u; d > 0u; d >>= 1u) {
+        barrier();
+        if (localId < d) {
+            uint ai2 = offset * (2u * localId + 1u) - 1u;
+            uint bi2 = offset * (2u * localId + 2u) - 1u;
+            sharedData[bi2] += sharedData[ai2];
+        }
+        offset *= 2u;
+    }
+    
+    // Clear the last element
+    if (localId == 0u) {
+        sharedData[511u] = 0u;
+    }
+    
+    // Down-sweep phase
+    for (uint d = 1u; d < 512u; d *= 2u) {
+        offset >>= 1u;
+        barrier();
+        if (localId < d) {
+            uint ai2 = offset * (2u * localId + 1u) - 1u;
+            uint bi2 = offset * (2u * localId + 2u) - 1u;
+            uint temp = sharedData[ai2];
+            sharedData[ai2] = sharedData[bi2];
+            sharedData[bi2] += temp;
+        }
+    }
+    
+    barrier();
+    
+    // Write results back to global memory
+    if (baseOffset + ai < params.elementCount) {
+        dataBuffer.data[baseOffset + ai] = sharedData[ai];
+    }
+    if (baseOffset + bi < params.elementCount) {
+        dataBuffer.data[baseOffset + bi] = sharedData[bi];
+    }
+}

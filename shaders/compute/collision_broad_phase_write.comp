@@ -1,0 +1,85 @@
+#version 460
+
+// Broad-phase collision detection - Pass 2: Write cell entries
+// After prefix sum has computed offsets, this pass writes the actual cell entries
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+struct ColliderAABB {
+    vec4 minPos;     // xyz = min bounds, w = object index
+    vec4 maxPos;     // xyz = max bounds, w = flags (static=1, dynamic=0)
+};
+
+struct CellEntry {
+    uint objectIndex;
+    uint cellHash;
+};
+
+layout(std430, binding = 0) readonly buffer ColliderBuffer {
+    ColliderAABB colliders[];
+} inColliders;
+
+layout(std430, binding = 1) writeonly buffer CellEntryBuffer {
+    CellEntry entries[];
+} outCellEntries;
+
+// Prefix sum result: starting offset for each object's cell entries
+layout(std430, binding = 2) readonly buffer OffsetBuffer {
+    uint offsets[];
+} cellOffsets;
+
+layout(push_constant) uniform BroadPhaseParams {
+    float cellSize;
+    float invCellSize;
+    uint objectCount;
+    uint gridResolution;
+    vec4 worldMin;
+    vec4 worldMax;
+} params;
+
+uint spatialHash(ivec3 cell) {
+    const uint p1 = 73856093u;
+    const uint p2 = 19349663u;
+    const uint p3 = 83492791u;
+    
+    uint x = uint(cell.x) & (params.gridResolution - 1u);
+    uint y = uint(cell.y) & (params.gridResolution - 1u);
+    uint z = uint(cell.z) & (params.gridResolution - 1u);
+    
+    return (x * p1) ^ (y * p2) ^ (z * p3);
+}
+
+ivec3 worldToCell(vec3 pos) {
+    vec3 offset = pos - params.worldMin.xyz;
+    return ivec3(floor(offset * params.invCellSize));
+}
+
+void main() {
+    uint objectIndex = gl_GlobalInvocationID.x;
+    
+    if (objectIndex >= params.objectCount) {
+        return;
+    }
+    
+    ColliderAABB aabb = inColliders.colliders[objectIndex];
+    
+    ivec3 minCell = worldToCell(aabb.minPos.xyz);
+    ivec3 maxCell = worldToCell(aabb.maxPos.xyz);
+    
+    minCell = max(minCell, ivec3(0));
+    maxCell = min(maxCell, ivec3(int(params.gridResolution) - 1));
+    
+    uint writeOffset = cellOffsets.offsets[objectIndex];
+    
+    for (int z = minCell.z; z <= maxCell.z; ++z) {
+        for (int y = minCell.y; y <= maxCell.y; ++y) {
+            for (int x = minCell.x; x <= maxCell.x; ++x) {
+                CellEntry entry;
+                entry.objectIndex = objectIndex;
+                entry.cellHash = spatialHash(ivec3(x, y, z));
+                outCellEntries.entries[writeOffset] = entry;
+                ++writeOffset;
+            }
+        }
+    }
+}

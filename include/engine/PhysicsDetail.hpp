@@ -36,7 +36,7 @@ struct Contact {
 glm::vec3 worldHalfExtents(const GameObject& object);
 glm::vec3 inverseInertiaTensor(const GameObject& object);
 glm::vec3 applyInverseInertia(const glm::vec3& inverse, const glm::vec3& value);
-glm::vec3 estimateContactPoint(const GameObject& a, const GameObject& b, const glm::vec3& normal);
+glm::vec3 estimateContactPoint(const GameObject& a, const GameObject& b, const glm::vec3& normal, float penetration = 0.0f);
 bool computePenetration(const AABB& a, const AABB& b, CollisionResult& result);
 float combineCoefficient(float a, float b);
 

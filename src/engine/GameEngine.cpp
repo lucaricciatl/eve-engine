@@ -223,8 +223,33 @@ AABB GameObject::worldBounds() const
     if (!colliderData) {
         return {transformComponent.position, transformComponent.position};
     }
-    const glm::vec3 halfSize = colliderData->halfExtents * transformComponent.scale;
-    return {transformComponent.position - halfSize, transformComponent.position + halfSize};
+    
+    // Collider half-extents are already in world-space (specified when enableCollider is called)
+    // DO NOT multiply by scale - that would double-apply the scaling
+    const glm::vec3 halfSize = colliderData->halfExtents;
+    
+    // Compute rotation matrix from Euler angles
+    const glm::vec3& rot = transformComponent.rotation;
+    const float cx = std::cos(rot.x), sx = std::sin(rot.x);
+    const float cy = std::cos(rot.y), sy = std::sin(rot.y);
+    const float cz = std::cos(rot.z), sz = std::sin(rot.z);
+    
+    // Rotation matrix (ZYX order)
+    // We only need the absolute values of the matrix elements for AABB computation
+    const glm::mat3 absRotation{
+        std::abs(cy * cz), std::abs(cy * sz), std::abs(sy),
+        std::abs(sx * sy * cz - cx * sz), std::abs(sx * sy * sz + cx * cz), std::abs(sx * cy),
+        std::abs(cx * sy * cz + sx * sz), std::abs(cx * sy * sz - sx * cz), std::abs(cx * cy)
+    };
+    
+    // Transform half extents by absolute rotation matrix to get rotated AABB half extents
+    const glm::vec3 rotatedHalfSize{
+        absRotation[0][0] * halfSize.x + absRotation[1][0] * halfSize.y + absRotation[2][0] * halfSize.z,
+        absRotation[0][1] * halfSize.x + absRotation[1][1] * halfSize.y + absRotation[2][1] * halfSize.z,
+        absRotation[0][2] * halfSize.x + absRotation[1][2] * halfSize.y + absRotation[2][2] * halfSize.z
+    };
+    
+    return {transformComponent.position - rotatedHalfSize, transformComponent.position + rotatedHalfSize};
 }
 
 DeformableBody& GameObject::enableDeformableCloth(int width, int height, float spacing)

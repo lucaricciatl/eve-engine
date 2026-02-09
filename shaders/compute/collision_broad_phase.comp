@@ -1,0 +1,107 @@
+#version 460
+
+// Broad-phase collision detection using spatial hashing
+// Based on GPU Gems 3, Chapter 32: Broad-Phase Collision Detection with CUDA
+// Ported to Vulkan compute shader for portability
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+// Collider AABB data (GPU-compatible layout)
+struct ColliderAABB {
+    vec4 minPos;     // xyz = min bounds, w = object index
+    vec4 maxPos;     // xyz = max bounds, w = flags (static=1, dynamic=0)
+};
+
+// Spatial hash cell entry
+struct CellEntry {
+    uint objectIndex;
+    uint cellHash;
+};
+
+// Collision pair (potential collision between two objects)
+struct CollisionPair {
+    uint objectA;
+    uint objectB;
+    uint padding0;
+    uint padding1;
+};
+
+// Input: all collider AABBs
+layout(std430, binding = 0) readonly buffer ColliderBuffer {
+    ColliderAABB colliders[];
+} inColliders;
+
+// Output: cell entries for sorting
+layout(std430, binding = 1) writeonly buffer CellEntryBuffer {
+    CellEntry entries[];
+} outCellEntries;
+
+// Output: number of cell entries per object (for prefix sum)
+layout(std430, binding = 2) buffer CellCountBuffer {
+    uint cellCounts[];
+} cellCounts;
+
+// Push constants for simulation parameters
+layout(push_constant) uniform BroadPhaseParams {
+    float cellSize;          // Size of each spatial hash cell
+    float invCellSize;       // 1.0 / cellSize
+    uint objectCount;        // Number of objects
+    uint gridResolution;     // Resolution of the hash grid
+    vec4 worldMin;           // Minimum world bounds
+    vec4 worldMax;           // Maximum world bounds
+} params;
+
+// Spatial hash function - maps 3D cell coordinates to a 1D hash
+uint spatialHash(ivec3 cell) {
+    // Large prime numbers for hashing
+    const uint p1 = 73856093u;
+    const uint p2 = 19349663u;
+    const uint p3 = 83492791u;
+    
+    // Wrap cell coordinates to valid range
+    uint x = uint(cell.x) & (params.gridResolution - 1u);
+    uint y = uint(cell.y) & (params.gridResolution - 1u);
+    uint z = uint(cell.z) & (params.gridResolution - 1u);
+    
+    return (x * p1) ^ (y * p2) ^ (z * p3);
+}
+
+// Convert world position to cell coordinates
+ivec3 worldToCell(vec3 pos) {
+    vec3 offset = pos - params.worldMin.xyz;
+    return ivec3(floor(offset * params.invCellSize));
+}
+
+void main() {
+    uint objectIndex = gl_GlobalInvocationID.x;
+    
+    if (objectIndex >= params.objectCount) {
+        return;
+    }
+    
+    ColliderAABB aabb = inColliders.colliders[objectIndex];
+    
+    // Calculate which cells this AABB overlaps
+    ivec3 minCell = worldToCell(aabb.minPos.xyz);
+    ivec3 maxCell = worldToCell(aabb.maxPos.xyz);
+    
+    // Clamp to valid cell range
+    minCell = max(minCell, ivec3(0));
+    maxCell = min(maxCell, ivec3(int(params.gridResolution) - 1));
+    
+    // Count how many cells this object spans
+    uint cellCount = 0;
+    for (int z = minCell.z; z <= maxCell.z; ++z) {
+        for (int y = minCell.y; y <= maxCell.y; ++y) {
+            for (int x = minCell.x; x <= maxCell.x; ++x) {
+                ++cellCount;
+            }
+        }
+    }
+    
+    // Store the cell count for this object (used for prefix sum)
+    cellCounts.cellCounts[objectIndex] = cellCount;
+    
+    // Note: The actual cell entries are written in a second pass after
+    // prefix sum computes the output offsets
+}

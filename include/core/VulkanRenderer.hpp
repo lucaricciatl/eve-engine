@@ -57,6 +57,7 @@ struct alignas(16) CameraBufferObject {
 	glm::vec4 shadingParams;
 	glm::vec4 fogColor;
 	glm::vec4 fogParams;
+	glm::vec4 blurParams;  // x=enabled, y=radius, z=sigma, w=type (0=gaussian, 1=box, 2=radial)
 };
 
 struct QueueFamilyIndices {
@@ -81,6 +82,21 @@ public:
 		float heightFalloff{0.15f};
 		float heightOffset{0.0f};
 		float startDistance{0.0f};
+	};
+
+	enum class BlurType : int {
+		Gaussian = 0,
+		Box = 1,
+		Radial = 2
+	};
+
+	struct BlurSettings {
+		bool enabled{false};
+		BlurType type{BlurType::Gaussian};
+		float radius{3.0f};      // Blur radius (1-10)
+		float sigma{2.0f};       // Gaussian sigma
+		int sampleCount{16};     // Quality samples for radial
+		glm::vec2 center{0.5f, 0.5f}; // Center for radial blur
 	};
 
 	explicit VulkanRenderer(vkengine::IGameEngine& engineRef);
@@ -110,6 +126,16 @@ public:
 	void setFogHeightOffset(float offset) noexcept { fogSettings.heightOffset = offset; }
 	void setFogStartDistance(float distance) noexcept { fogSettings.startDistance = distance; }
 	[[nodiscard]] const FogSettings& getFogSettings() const noexcept { return fogSettings; }
+
+	// Blur settings
+	void setBlurSettings(const BlurSettings& settings) noexcept { blurSettings = settings; }
+	void setBlurEnabled(bool enabled) noexcept { blurSettings.enabled = enabled; }
+	void setBlurType(BlurType type) noexcept { blurSettings.type = type; }
+	void setBlurRadius(float radius) noexcept { blurSettings.radius = glm::clamp(radius, 1.0f, 10.0f); }
+	void setBlurSigma(float sigma) noexcept { blurSettings.sigma = glm::clamp(sigma, 0.5f, 10.0f); }
+	void setBlurCenter(const glm::vec2& center) noexcept { blurSettings.center = center; }
+	[[nodiscard]] const BlurSettings& getBlurSettings() const noexcept { return blurSettings; }
+	[[nodiscard]] BlurSettings& getBlurSettings() noexcept { return blurSettings; }
 
 	struct ConsoleSettings {
 		bool enabled{false};
@@ -172,13 +198,17 @@ private:
 	void createRenderPass();
 	void createShadowRenderPass();
 	void createReflectionRenderPass();
+	void createPostProcessRenderPass();
 	void createDescriptorSetLayout();
 	void createPipelines();
+	void createPostProcessPipelines();
 	void createDepthResources();
 	void createShadowResources();
 	void createReflectionResources();
+	void createPostProcessResources();
 	void destroyReflectionResources();
 	void destroyShadowResources();
+	void destroyPostProcessResources();
 	void createFramebuffers();
 	void createCommandPool();
 	void createVertexBuffer();
@@ -204,6 +234,7 @@ private:
 	void destroyUi();
 	void rebuildUi();
 	void buildUi(float deltaSeconds);
+	void initGpuCollision();
 	void ensureDeformableBuffers(VkDeviceSize vertexBufferSize, VkDeviceSize indexBufferSize);
 	void destroyDeformableBuffers();
 
@@ -361,6 +392,34 @@ private:
 	TextureResource reflectionTexture{};
 	bool reflectionImageReady = false;
 
+	// Post-processing resources
+	VkRenderPass postProcessRenderPass = VK_NULL_HANDLE;
+	std::vector<VkFramebuffer> postProcessSwapchainFramebuffers; // Color-only framebuffers for final pass
+	VkImage offscreenColorImage = VK_NULL_HANDLE;
+	VkDeviceMemory offscreenColorMemory = VK_NULL_HANDLE;
+	VkImageView offscreenColorView = VK_NULL_HANDLE;
+	VkImage offscreenDepthImage = VK_NULL_HANDLE;
+	VkDeviceMemory offscreenDepthMemory = VK_NULL_HANDLE;
+	VkImageView offscreenDepthView = VK_NULL_HANDLE;
+	VkFramebuffer offscreenFramebuffer = VK_NULL_HANDLE;
+	VkSampler postProcessSampler = VK_NULL_HANDLE;
+	VkDescriptorSetLayout postProcessDescriptorLayout = VK_NULL_HANDLE;
+	VkDescriptorPool postProcessDescriptorPool = VK_NULL_HANDLE;
+	VkDescriptorSet postProcessDescriptorSet = VK_NULL_HANDLE;
+	VkPipelineLayout postProcessPipelineLayout = VK_NULL_HANDLE;
+	VkPipeline blurHorizontalPipeline = VK_NULL_HANDLE;
+	VkPipeline blurVerticalPipeline = VK_NULL_HANDLE;
+	VkPipeline blitPipeline = VK_NULL_HANDLE;
+	// Ping-pong buffer for two-pass blur
+	VkImage pingPongImage = VK_NULL_HANDLE;
+	VkDeviceMemory pingPongMemory = VK_NULL_HANDLE;
+	VkImageView pingPongView = VK_NULL_HANDLE;
+	VkDescriptorSet pingPongDescriptorSet = VK_NULL_HANDLE;
+	VkFramebuffer pingPongFramebuffer = VK_NULL_HANDLE;
+	
+	// Track if post-process images need layout transition
+	bool offscreenImageReady = false;
+
 	VkCommandPool commandPool = VK_NULL_HANDLE;
 	std::vector<VkCommandBuffer> commandBuffers;
 
@@ -445,6 +504,7 @@ private:
 	float smoothedFps{0.0f};
 	std::function<void(float)> customUi{};
 	FogSettings fogSettings{};
+	BlurSettings blurSettings{};
 	struct ConsoleState {
 		bool enabled{false};
 		bool autoScroll{true};
