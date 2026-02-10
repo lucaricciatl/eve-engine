@@ -107,6 +107,9 @@ public:
 	const vkengine::IGameEngine& getEngine() const noexcept { return *engine; }
 
 	void setLightAnimationEnabled(bool enabled) noexcept { animateLight = enabled; }
+	void setUiEnabled(bool enabled) noexcept { uiEnabled = enabled; }
+	void setFramesInFlight(uint32_t frames) noexcept { framesInFlight = std::clamp(frames, 2u, 3u); }
+	[[nodiscard]] uint32_t getFramesInFlight() const noexcept { return framesInFlight; }
 	void setCustomUiCallback(std::function<void(float)> callback) { customUi = std::move(callback); }
 	using CursorCallback = std::function<void(double, double)>;
 	using MouseButtonCallback = std::function<void(int, int, double, double)>;
@@ -171,13 +174,25 @@ public:
 	[[nodiscard]] glm::uvec2 viewportSize() const noexcept { return {swapChainExtent.width, swapChainExtent.height}; }
 	[[nodiscard]] GLFWwindow* getWindow() const noexcept { return window; }
 
+	/// Register a procedural texture for display in ImGui.  Returns an ImTextureID
+	/// usable with ImGui::Image().  The caller owns the handle and must eventually
+	/// call destroyImGuiTexture().
+	ImTextureID registerImGuiTexture(const vkengine::TextureData& textureData);
+
+	/// Re-upload pixel data for an existing ImGui texture handle (same or different size).
+	void updateImGuiTexture(ImTextureID handle, const vkengine::TextureData& textureData);
+
+	/// Destroy a previously registered ImGui texture.
+	void destroyImGuiTexture(ImTextureID handle);
+
 private:
 	struct MeshGpuBuffers;
 	struct TextureResource;
 
 	static constexpr uint32_t WIDTH = 1280;
 	static constexpr uint32_t HEIGHT = 720;
-	static constexpr size_t MAX_FRAMES_IN_FLIGHT = 2;
+	static constexpr uint32_t MIN_FRAMES_IN_FLIGHT = 2;
+	static constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 3;
 	static constexpr uint32_t SHADOW_MAP_DIM = 2048;
 
 	void initWindow();
@@ -345,6 +360,9 @@ private:
 	bool skyTextureRequested{false};
 	bool skyTextureLoaded{false};
 
+	// User-registered ImGui textures (from registerImGuiTexture).
+	std::unordered_map<VkDescriptorSet, TextureResource> imguiUserTextures;
+
 	VkInstance instance = VK_NULL_HANDLE;
 	VkDebugUtilsMessengerEXT debugMessenger = VK_NULL_HANDLE;
 	VkSurfaceKHR surface = VK_NULL_HANDLE;
@@ -478,7 +496,8 @@ private:
 	uint32_t captureImageIndex = 0;
 	std::filesystem::path capturePath;
 
-	size_t currentFrame = 0;
+	uint32_t framesInFlight = MIN_FRAMES_IN_FLIGHT;
+	uint32_t currentFrame = 0;
 	bool framebufferResized = false;
 
 	std::chrono::steady_clock::time_point startTime;

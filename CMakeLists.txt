@@ -210,6 +210,7 @@ set(CORE_ENGINE_SOURCES
     src/engine/assets/ImageWriter.cpp
     src/engine/assets/TextureLoader.cpp
     src/engine/assets/StbImage.cpp
+    src/engine/assets/TextureGenerator.cpp
     # New engine systems
     src/engine/Serialization.cpp
     src/engine/Audio.cpp
@@ -358,6 +359,9 @@ target_link_libraries(ReflectionsExample PRIVATE core)
 add_executable(PostProcessingExample examples/post_processing/main.cpp)
 target_link_libraries(PostProcessingExample PRIVATE core)
 
+add_executable(TextureGenExample examples/texture_gen/main.cpp)
+target_link_libraries(TextureGenExample PRIVATE core)
+
 set(EXAMPLE_TARGETS
     CubeExample
     ParticleExample
@@ -381,6 +385,7 @@ set(EXAMPLE_TARGETS
     InAppConsoleExample
     ReflectionsExample
     PostProcessingExample
+    TextureGenExample
 )
 foreach(example_target IN LISTS EXAMPLE_TARGETS)
     set_property(TARGET ${example_target} PROPERTY FOLDER "examples")
@@ -416,6 +421,7 @@ if(MSVC)
     target_compile_options(PostProcessingExample PRIVATE /W4 /permissive-)
     target_compile_options(GpuCollisionExample PRIVATE /W4 /permissive-)
     target_compile_options(ReflectionsExample PRIVATE /W4 /permissive-)
+    target_compile_options(TextureGenExample PRIVATE /W4 /permissive-)
 else()
     target_compile_options(CubeExample PRIVATE -Wall -Wextra -pedantic)
     target_compile_options(ParticleExample PRIVATE -Wall -Wextra -pedantic)
@@ -439,6 +445,7 @@ else()
     target_compile_options(InAppConsoleExample PRIVATE -Wall -Wextra -pedantic)
     target_compile_options(PostProcessingExample PRIVATE -Wall -Wextra -pedantic)
     target_compile_options(ReflectionsExample PRIVATE -Wall -Wextra -pedantic)
+    target_compile_options(TextureGenExample PRIVATE -Wall -Wextra -pedantic)
 endif()
 
 set_source_files_properties(${SHADER_SOURCES} PROPERTIES HEADER_FILE_ONLY TRUE)

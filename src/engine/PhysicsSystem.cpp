@@ -5,10 +5,14 @@
 #include "engine/GpuCollisionSystem.hpp"
 
 #include <glm/gtc/constants.hpp>
+#include <glm/gtc/quaternion.hpp>
+#include <glm/gtx/quaternion.hpp>
 
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace vkengine {
@@ -20,47 +24,74 @@ glm::vec3 worldHalfExtents(const GameObject& object)
     if (!collider) {
         return glm::vec3(0.0f);
     }
-    // Apply transform scale to collider half-extents
-    return collider->halfExtents * object.transform().scale;
+    return collider->halfExtents;
 }
 
-glm::vec3 inverseInertiaTensor(const GameObject& object)
+glm::mat3 inertiaTensor(const GameObject& object)
 {
     const Collider* collider = object.collider();
     const auto& props = object.physics();
     if (!collider || props.mass <= 0.0f || !std::isfinite(props.mass)) {
-        return glm::vec3(0.0f);
+        return glm::mat3(0.0f);
+    }
+
+    const glm::mat3 body = inertiaTensorBody(object);
+    const glm::mat3 rotation = glm::mat3_cast(glm::quat(object.transform().rotation));
+    return rotation * body * glm::transpose(rotation);
+}
+
+glm::mat3 inertiaTensorBody(const GameObject& object)
+{
+    const Collider* collider = object.collider();
+    const auto& props = object.physics();
+    if (!collider || props.mass <= 0.0f || !std::isfinite(props.mass)) {
+        return glm::mat3(0.0f);
     }
 
     const glm::vec3 size = worldHalfExtents(object) * 2.0f;
     const float factor = props.mass / 12.0f;
-    
-    // Add minimum inertia bias to prevent instability with small/thin objects
-    constexpr float minInertia = 0.001f;
-    const glm::vec3 inertia{
-        std::max(minInertia, factor * (size.y * size.y + size.z * size.z)),
-        std::max(minInertia, factor * (size.x * size.x + size.z * size.z)),
-        std::max(minInertia, factor * (size.x * size.x + size.y * size.y))
-    };
 
-    // Clamp inverse inertia to prevent excessive angular response
-    constexpr float maxInverseInertia = 100.0f;
-    glm::vec3 inverse{0.0f};
-    if (inertia.x > 0.0f) {
-        inverse.x = std::min(maxInverseInertia, 1.0f / inertia.x);
-    }
-    if (inertia.y > 0.0f) {
-        inverse.y = std::min(maxInverseInertia, 1.0f / inertia.y);
-    }
-    if (inertia.z > 0.0f) {
-        inverse.z = std::min(maxInverseInertia, 1.0f / inertia.z);
-    }
-    return inverse;
+    constexpr float minInertia = 0.001f;
+    const float ix = std::max(minInertia, factor * (size.y * size.y + size.z * size.z));
+    const float iy = std::max(minInertia, factor * (size.x * size.x + size.z * size.z));
+    const float iz = std::max(minInertia, factor * (size.x * size.x + size.y * size.y));
+
+    return glm::mat3{
+        ix, 0.0f, 0.0f,
+        0.0f, iy, 0.0f,
+        0.0f, 0.0f, iz
+    };
 }
 
-glm::vec3 applyInverseInertia(const glm::vec3& inverse, const glm::vec3& value)
+glm::mat3 inverseInertiaTensor(const GameObject& object)
 {
-    return {inverse.x * value.x, inverse.y * value.y, inverse.z * value.z};
+    const Collider* collider = object.collider();
+    const auto& props = object.physics();
+    if (!collider || props.mass <= 0.0f || !std::isfinite(props.mass)) {
+        return glm::mat3(0.0f);
+    }
+
+    const glm::mat3 body = inertiaTensorBody(object);
+    const glm::vec3 inertia{body[0][0], body[1][1], body[2][2]};
+
+    constexpr float maxInverseInertia = 100.0f;
+    const float invX = inertia.x > 0.0f ? std::min(maxInverseInertia, 1.0f / inertia.x) : 0.0f;
+    const float invY = inertia.y > 0.0f ? std::min(maxInverseInertia, 1.0f / inertia.y) : 0.0f;
+    const float invZ = inertia.z > 0.0f ? std::min(maxInverseInertia, 1.0f / inertia.z) : 0.0f;
+
+    const glm::mat3 invBody{
+        invX, 0.0f, 0.0f,
+        0.0f, invY, 0.0f,
+        0.0f, 0.0f, invZ
+    };
+
+    const glm::mat3 rotation = glm::mat3_cast(glm::quat(object.transform().rotation));
+    return rotation * invBody * glm::transpose(rotation);
+}
+
+glm::vec3 applyInverseInertia(const glm::mat3& inverse, const glm::vec3& value)
+{
+    return inverse * value;
 }
 
 glm::vec3 estimateContactPoint(const GameObject& a, const GameObject& b, const glm::vec3& normal, float /*penetration*/)
@@ -145,6 +176,44 @@ float combineCoefficient(float a, float b)
     }
     return std::sqrt(product);
 }
+
+struct CellCoord {
+    int x{0};
+    int y{0};
+    int z{0};
+
+    bool operator==(const CellCoord& other) const noexcept
+    {
+        return x == other.x && y == other.y && z == other.z;
+    }
+};
+
+struct CellCoordHash {
+    std::size_t operator()(const CellCoord& cell) const noexcept
+    {
+        const std::size_t hx = static_cast<std::size_t>(cell.x) * 73856093u;
+        const std::size_t hy = static_cast<std::size_t>(cell.y) * 19349663u;
+        const std::size_t hz = static_cast<std::size_t>(cell.z) * 83492791u;
+        return hx ^ hy ^ hz;
+    }
+};
+
+CellCoord toCell(const glm::vec3& pos, const glm::vec3& origin, float cellSize)
+{
+    const glm::vec3 rel = (pos - origin) / cellSize;
+    return CellCoord{
+        static_cast<int>(std::floor(rel.x)),
+        static_cast<int>(std::floor(rel.y)),
+        static_cast<int>(std::floor(rel.z))
+    };
+}
+
+uint64_t makePairKey(uint32_t a, uint32_t b)
+{
+    const uint32_t minId = std::min(a, b);
+    const uint32_t maxId = std::max(a, b);
+    return (static_cast<uint64_t>(minId) << 32u) | static_cast<uint64_t>(maxId);
+}
 } // namespace physics_detail
 
 using namespace physics_detail;
@@ -165,14 +234,14 @@ void PhysicsSystem::update(Scene& scene, float deltaSeconds)
         return;
     }
 
-    auto& objects = scene.objects();
+    const auto& objects = scene.objectsCached();
     if (objects.empty()) {
         return;
     }
 
     float maxSpeed = 0.0f;
-    for (auto& object : objects) {
-        auto& properties = object.physics();
+    for (auto* object : objects) {
+        auto& properties = object->physics();
         if (!properties.simulate || properties.mass <= 0.0f || !std::isfinite(properties.mass)) {
             properties.lastAcceleration = glm::vec3(0.0f);
             properties.clearForces();
@@ -191,8 +260,8 @@ void PhysicsSystem::update(Scene& scene, float deltaSeconds)
     const float subDelta = deltaSeconds / static_cast<float>(subSteps);
 
     for (int step = 0; step < subSteps; ++step) {
-        for (auto& object : objects) {
-            auto& properties = object.physics();
+        for (auto* object : objects) {
+            auto& properties = object->physics();
             if (!properties.simulate || properties.mass <= 0.0f || !std::isfinite(properties.mass)) {
                 properties.lastAcceleration = glm::vec3(0.0f);
                 properties.clearForces();
@@ -208,22 +277,21 @@ void PhysicsSystem::update(Scene& scene, float deltaSeconds)
             const float linearDamping = std::clamp(properties.linearDamping, 0.0f, 1.0f);
             properties.velocity *= std::max(0.0f, 1.0f - linearDamping * subDelta);
 
-            auto& transform = object.transform();
+            auto& transform = object->transform();
             transform.position += properties.velocity * subDelta;
 
-            const glm::vec3 invInertia = inverseInertiaTensor(object);
-            const glm::vec3 angularAcceleration{
-                invInertia.x * properties.accumulatedTorque.x,
-                invInertia.y * properties.accumulatedTorque.y,
-                invInertia.z * properties.accumulatedTorque.z
-            };
+            const glm::mat3 inertia = inertiaTensor(*object);
+            const glm::mat3 invInertia = inverseInertiaTensor(*object);
+            const glm::vec3 omega = properties.angularVelocity;
+            const glm::vec3 gyroscopicTorque = glm::cross(omega, inertia * omega);
+            const float angularDamping = std::clamp(properties.angularDamping, 0.0f, 1.0f);
+            const float materialDissipation = std::clamp(properties.dynamicFriction + (1.0f - properties.restitution) * 0.5f, 0.0f, 1.0f);
+            const float dampingCoefficient = std::clamp(angularDamping + materialDissipation, 0.0f, 1.5f);
+            const glm::vec3 dampingTorque = -dampingCoefficient * omega;
+            const glm::vec3 netTorque = properties.accumulatedTorque - gyroscopicTorque + dampingTorque;
+            const glm::vec3 angularAcceleration = invInertia * netTorque;
 
             properties.angularVelocity += angularAcceleration * subDelta;
-            
-            // Apply stronger angular damping for stability
-            const float angularDamping = std::clamp(properties.angularDamping, 0.0f, 1.0f);
-            const float effectiveAngularDamping = std::max(angularDamping, 0.1f); // Minimum 10% damping
-            properties.angularVelocity *= std::max(0.0f, 1.0f - effectiveAngularDamping * subDelta);
 
             // Clamp angular velocity to prevent instability
             constexpr float maxAngularSpeed = 15.0f; // Reduced from 20
@@ -232,16 +300,15 @@ void PhysicsSystem::update(Scene& scene, float deltaSeconds)
                 properties.angularVelocity *= maxAngularSpeed / angularSpeed;
             }
             
-            // Kill very small angular velocities to help objects settle
-            if (angularSpeed < 0.01f) {
-                properties.angularVelocity = glm::vec3(0.0f);
+            // Integrate rotation using quaternion to avoid Euler drift
+            if (angularSpeed > 0.0f) {
+                glm::quat orientation = glm::quat(transform.rotation);
+                const glm::vec3 omegaStep = properties.angularVelocity;
+                const glm::quat omegaQuat{0.0f, omegaStep.x, omegaStep.y, omegaStep.z};
+                const glm::quat qDot = 0.5f * omegaQuat * orientation;
+                orientation = glm::normalize(orientation + qDot * subDelta);
+                transform.rotation = glm::eulerAngles(orientation);
             }
-
-            // Proper Euler angle rate conversion (simplified for small angles)
-            // For Euler XYZ: omega = R_z * R_y * R_x * euler_rate
-            // Approximation: euler_rate ≈ omega for small rotations
-            const glm::vec3 angularDelta = properties.angularVelocity * subDelta;
-            transform.rotation += angularDelta;
 
             for (int axis = 0; axis < 3; ++axis) {
                 transform.rotation[axis] = std::fmod(transform.rotation[axis], glm::two_pi<float>());
@@ -266,7 +333,7 @@ void PhysicsSystem::update(Scene& scene, float deltaSeconds)
 
 void PhysicsSystem::resolveCollisions(Scene& scene, float deltaSeconds)
 {
-    auto& objects = scene.objects();
+    const auto& objects = scene.objectsCached();
     if (objects.size() < 2) {
         return;
     }
@@ -291,65 +358,120 @@ void PhysicsSystem::resolveCollisions(Scene& scene, float deltaSeconds)
         return 1.0f / props.mass;
     };
 
+    std::vector<AABB> bounds(objects.size());
+    glm::vec3 worldMin{std::numeric_limits<float>::max()};
+    glm::vec3 worldMax{std::numeric_limits<float>::lowest()};
+    float maxHalfExtent = 0.0f;
+
+    for (size_t i = 0; i < objects.size(); ++i) {
+        GameObject& object = *objects[i];
+        if (!object.hasCollider()) {
+            continue;
+        }
+        bounds[i] = object.worldBounds();
+        worldMin = glm::min(worldMin, bounds[i].min);
+        worldMax = glm::max(worldMax, bounds[i].max);
+        const glm::vec3 half = (bounds[i].max - bounds[i].min) * 0.5f;
+        maxHalfExtent = std::max(maxHalfExtent, std::max(half.x, std::max(half.y, half.z)));
+    }
+
+    if (!std::isfinite(worldMin.x) || !std::isfinite(worldMax.x)) {
+        return;
+    }
+
+    const float cellSize = std::max(0.5f, maxHalfExtent * 2.0f);
+    std::unordered_map<CellCoord, std::vector<uint32_t>, CellCoordHash> grid;
+    grid.reserve(objects.size() * 2);
+
+    for (uint32_t i = 0; i < objects.size(); ++i) {
+        GameObject& object = *objects[i];
+        if (!object.hasCollider()) {
+            continue;
+        }
+        const AABB& aabb = bounds[i];
+        const CellCoord minCell = toCell(aabb.min, worldMin, cellSize);
+        const CellCoord maxCell = toCell(aabb.max, worldMin, cellSize);
+        for (int z = minCell.z; z <= maxCell.z; ++z) {
+            for (int y = minCell.y; y <= maxCell.y; ++y) {
+                for (int x = minCell.x; x <= maxCell.x; ++x) {
+                    grid[CellCoord{x, y, z}].push_back(i);
+                }
+            }
+        }
+    }
+
+    std::unordered_set<uint64_t> uniquePairs;
+    uniquePairs.reserve(objects.size() * 4);
+
     std::vector<Contact> contacts;
     contacts.reserve(objects.size());
 
-    for (size_t i = 0; i < objects.size(); ++i) {
-        for (size_t j = i + 1; j < objects.size(); ++j) {
-            GameObject& a = objects[i];
-            GameObject& b = objects[j];
-            if (!a.hasCollider() || !b.hasCollider()) {
-                continue;
-            }
-
-            CollisionResult result;
-            if (!computePenetration(a.worldBounds(), b.worldBounds(), result)) {
-                continue;
-            }
-
-            const float invMassA = computeInverseMass(a, a.collider());
-            const float invMassB = computeInverseMass(b, b.collider());
-            const float invMassSum = invMassA + invMassB;
-
-            if (invMassSum <= 0.0f || result.penetrationDepth <= 0.0f) {
-                continue;
-            }
-
-            // Immediate position correction for deep penetrations (speculative contacts)
-            if (result.penetrationDepth > penetrationSlop * 2.0f) {
-                const float correctionAmount = (result.penetrationDepth - penetrationSlop) * 0.5f;
-                const glm::vec3 correction = correctionAmount * result.normal;
-                if (invMassA > 0.0f) {
-                    a.transform().position -= correction * (invMassA / invMassSum);
+    for (const auto& cell : grid) {
+        const auto& indices = cell.second;
+        if (indices.size() < 2) {
+            continue;
+        }
+        for (size_t idxA = 0; idxA < indices.size(); ++idxA) {
+            for (size_t idxB = idxA + 1; idxB < indices.size(); ++idxB) {
+                const uint32_t i = indices[idxA];
+                const uint32_t j = indices[idxB];
+                const uint64_t key = makePairKey(i, j);
+                if (!uniquePairs.insert(key).second) {
+                    continue;
                 }
-                if (invMassB > 0.0f) {
-                    b.transform().position += correction * (invMassB / invMassSum);
+
+                GameObject& a = *objects[i];
+                GameObject& b = *objects[j];
+                if (!a.hasCollider() || !b.hasCollider()) {
+                    continue;
                 }
-                // Recompute penetration after correction
-                result.penetrationDepth -= correctionAmount;
+
+                CollisionResult result;
+                if (!computePenetration(bounds[i], bounds[j], result)) {
+                    continue;
+                }
+
+                const float invMassA = computeInverseMass(a, a.collider());
+                const float invMassB = computeInverseMass(b, b.collider());
+                const float invMassSum = invMassA + invMassB;
+
+                if (invMassSum <= 0.0f || result.penetrationDepth <= 0.0f) {
+                    continue;
+                }
+
+                if (result.penetrationDepth > penetrationSlop * 2.0f) {
+                    const float correctionAmount = (result.penetrationDepth - penetrationSlop) * 0.5f;
+                    const glm::vec3 correction = correctionAmount * result.normal;
+                    if (invMassA > 0.0f) {
+                        a.transform().position -= correction * (invMassA / invMassSum);
+                    }
+                    if (invMassB > 0.0f) {
+                        b.transform().position += correction * (invMassB / invMassSum);
+                    }
+                    result.penetrationDepth -= correctionAmount;
+                }
+
+                Contact contact{};
+                contact.a = &a;
+                contact.b = &b;
+                contact.normal = result.normal;
+                contact.penetration = result.penetrationDepth;
+                contact.contactPoint = estimateContactPoint(a, b, result.normal, result.penetrationDepth);
+                contact.ra = contact.contactPoint - a.transform().position;
+                contact.rb = contact.contactPoint - b.transform().position;
+                contact.invMassA = invMassA;
+                contact.invMassB = invMassB;
+                contact.invInertiaA = inverseInertiaTensor(a);
+                contact.invInertiaB = inverseInertiaTensor(b);
+
+                auto& propsA = a.physics();
+                auto& propsB = b.physics();
+                contact.restitution = std::clamp(std::min(propsA.restitution, propsB.restitution), 0.0f, 0.9f);
+                contact.staticFriction = combineCoefficient(propsA.staticFriction, propsB.staticFriction);
+                contact.dynamicFriction = combineCoefficient(propsA.dynamicFriction, propsB.dynamicFriction);
+
+                contacts.emplace_back(contact);
             }
-
-            Contact contact{};
-            contact.a = &a;
-            contact.b = &b;
-            contact.normal = result.normal;
-            contact.penetration = result.penetrationDepth;
-            contact.contactPoint = estimateContactPoint(a, b, result.normal, result.penetrationDepth);
-            contact.ra = contact.contactPoint - a.transform().position;
-            contact.rb = contact.contactPoint - b.transform().position;
-            contact.invMassA = invMassA;
-            contact.invMassB = invMassB;
-            contact.invInertiaA = inverseInertiaTensor(a);
-            contact.invInertiaB = inverseInertiaTensor(b);
-
-            auto& propsA = a.physics();
-            auto& propsB = b.physics();
-            // Clamp restitution to max 0.9 to guarantee energy loss on every collision
-            contact.restitution = std::clamp(std::min(propsA.restitution, propsB.restitution), 0.0f, 0.9f);
-            contact.staticFriction = combineCoefficient(propsA.staticFriction, propsB.staticFriction);
-            contact.dynamicFriction = combineCoefficient(propsA.dynamicFriction, propsB.dynamicFriction);
-
-            contacts.emplace_back(contact);
         }
     }
 
@@ -428,7 +550,7 @@ void PhysicsSystem::resolveCollisions(Scene& scene, float deltaSeconds)
             constexpr float angularImpulseScale = 0.5f; // Scale down angular response for stability
             constexpr float maxAngularImpulse = 5.0f;
             
-            if (contact.invMassA > 0.0f && glm::length(contact.invInertiaA) > 0.0f) {
+            if (contact.invMassA > 0.0f) {
                 glm::vec3 angularImpulseA = glm::cross(contact.ra, -impulse);
                 angularImpulseA = applyInverseInertia(contact.invInertiaA, angularImpulseA) * angularImpulseScale;
                 // Clamp angular impulse magnitude
@@ -438,7 +560,7 @@ void PhysicsSystem::resolveCollisions(Scene& scene, float deltaSeconds)
                 }
                 propsA.angularVelocity += angularImpulseA;
             }
-            if (contact.invMassB > 0.0f && glm::length(contact.invInertiaB) > 0.0f) {
+            if (contact.invMassB > 0.0f) {
                 glm::vec3 angularImpulseB = glm::cross(contact.rb, impulse);
                 angularImpulseB = applyInverseInertia(contact.invInertiaB, angularImpulseB) * angularImpulseScale;
                 // Clamp angular impulse magnitude
@@ -548,7 +670,7 @@ void PhysicsSystem::resolveCollisions(Scene& scene, float deltaSeconds)
 
 void PhysicsSystem::resolveCollisionsGpu(Scene& scene, float deltaSeconds)
 {
-    auto& objects = scene.objects();
+    const auto& objects = scene.objectsCached();
     if (objects.size() < 2 || !gpuCollisionSystem) {
         return;
     }
@@ -580,7 +702,6 @@ void PhysicsSystem::resolveCollisionsGpu(Scene& scene, float deltaSeconds)
         return 1.0f / props.mass;
     };
 
-    // Build contact list from GPU collision results
     std::vector<Contact> contacts;
     contacts.reserve(gpuCollisions.size());
 
@@ -589,8 +710,8 @@ void PhysicsSystem::resolveCollisionsGpu(Scene& scene, float deltaSeconds)
             continue;
         }
 
-        GameObject& a = objects[gpuResult.objectA];
-        GameObject& b = objects[gpuResult.objectB];
+        GameObject& a = *objects[gpuResult.objectA];
+        GameObject& b = *objects[gpuResult.objectB];
 
         if (!a.hasCollider() || !b.hasCollider()) {
             continue;
@@ -693,7 +814,7 @@ void PhysicsSystem::resolveCollisionsGpu(Scene& scene, float deltaSeconds)
             constexpr float angularImpulseScale = 0.5f;
             constexpr float maxAngularImpulse = 5.0f;
             
-            if (contact.invMassA > 0.0f && glm::length(contact.invInertiaA) > 0.0f) {
+            if (contact.invMassA > 0.0f) {
                 glm::vec3 angularImpulseA = glm::cross(contact.ra, -impulse);
                 angularImpulseA = applyInverseInertia(contact.invInertiaA, angularImpulseA) * angularImpulseScale;
                 const float angImpLen = glm::length(angularImpulseA);
@@ -702,7 +823,7 @@ void PhysicsSystem::resolveCollisionsGpu(Scene& scene, float deltaSeconds)
                 }
                 propsA.angularVelocity += angularImpulseA;
             }
-            if (contact.invMassB > 0.0f && glm::length(contact.invInertiaB) > 0.0f) {
+            if (contact.invMassB > 0.0f) {
                 glm::vec3 angularImpulseB = glm::cross(contact.rb, impulse);
                 angularImpulseB = applyInverseInertia(contact.invInertiaB, angularImpulseB) * angularImpulseScale;
                 const float angImpLen = glm::length(angularImpulseB);

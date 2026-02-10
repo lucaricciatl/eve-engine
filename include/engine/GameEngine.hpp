@@ -192,8 +192,10 @@ private:
 class Scene {
 public:
     GameObject& createObject(const std::string& name, MeshType meshType);
+    std::vector<GameObject*> createObjects(std::size_t count, MeshType meshType, const std::string& namePrefix = "");
     [[nodiscard]] std::deque<GameObject>& objects() noexcept { return gameObjects; }
     [[nodiscard]] const std::deque<GameObject>& objects() const noexcept { return gameObjects; }
+    [[nodiscard]] const std::vector<GameObject*>& objectsCached() const noexcept { return objectCache; }
 
     [[nodiscard]] Camera& camera() noexcept { return sceneCamera; }
     [[nodiscard]] const Camera& camera() const noexcept { return sceneCamera; }
@@ -214,6 +216,7 @@ public:
 private:
     Camera sceneCamera{};
     std::deque<GameObject> gameObjects;
+    std::vector<GameObject*> objectCache;
     std::vector<Light> sceneLights;
     std::uint64_t nextId = 0;
     core::ecs::Registry ecsRegistry{};
@@ -234,6 +237,7 @@ public:
     const ParticleSystem& particles() const noexcept override { return particleSystem; }
 
     GameObject& createObject(const std::string& name, MeshType meshType) override { return activeScene.createObject(name, meshType); }
+    std::vector<GameObject*> createObjects(std::size_t count, MeshType meshType, const std::string& namePrefix = "") { return activeScene.createObjects(count, meshType, namePrefix); }
 
     void update(float deltaSeconds) override;
 

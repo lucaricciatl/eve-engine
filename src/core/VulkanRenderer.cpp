@@ -419,6 +419,14 @@ void VulkanRenderer::cleanup()
     
     cleanupSwapChain();
 	destroySkyTexture();
+
+    // Destroy user-registered ImGui textures.
+    for (auto& [ds, res] : imguiUserTextures) {
+        uiLayer.unregisterTexture(ds);
+        destroyTextureResource(res);
+    }
+    imguiUserTextures.clear();
+
     destroyPostProcessResources();
     
     // Destroy the post-process render pass (not destroyed in destroyPostProcessResources)
@@ -465,7 +473,7 @@ void VulkanRenderer::cleanup()
     destroyCaptureResources();
     destroyMaterialResources();
 
-    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+    for (uint32_t i = 0; i < framesInFlight; ++i) {
         vkDestroySemaphore(device, imageAvailableSemaphores[i], nullptr);
         vkDestroyFence(device, inFlightFences[i], nullptr);
     }
@@ -2407,8 +2415,9 @@ void VulkanRenderer::createCommandBuffers()
 
 void VulkanRenderer::createSyncObjects()
 {
-    imageAvailableSemaphores.resize(MAX_FRAMES_IN_FLIGHT);
-    inFlightFences.resize(MAX_FRAMES_IN_FLIGHT);
+    framesInFlight = std::clamp(framesInFlight, MIN_FRAMES_IN_FLIGHT, MAX_FRAMES_IN_FLIGHT);
+    imageAvailableSemaphores.resize(framesInFlight);
+    inFlightFences.resize(framesInFlight);
     imagesInFlight.resize(swapChainImages.size(), VK_NULL_HANDLE);
 
     VkSemaphoreCreateInfo semaphoreInfo{};
@@ -2418,7 +2427,7 @@ void VulkanRenderer::createSyncObjects()
     fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
     fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
 
-    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+    for (uint32_t i = 0; i < framesInFlight; ++i) {
         if (vkCreateSemaphore(device, &semaphoreInfo, nullptr, &imageAvailableSemaphores[i]) != VK_SUCCESS ||
             vkCreateFence(device, &fenceInfo, nullptr, &inFlightFences[i]) != VK_SUCCESS) {
             throw std::runtime_error("Failed to create synchronization objects");
@@ -2573,18 +2582,18 @@ void VulkanRenderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t
 
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipeline);
 
-    const auto& objects = engine->scene().objects();
-    for (const auto& object : objects) {
-        const auto& render = object.render();
+    const auto& objects = engine->scene().objectsCached();
+    for (const auto* object : objects) {
+        const auto& render = object->render();
         if (!render.visible) {
             continue;
         }
 
-        switch (object.mesh()) {
+        switch (object->mesh()) {
         case vkengine::MeshType::Cube: {
             vkCmdBindVertexBuffers(commandBuffer, 0, 1, cubeVertexBuffers, cubeOffsets);
             vkCmdBindIndexBuffer(commandBuffer, indexBuffer, 0, VK_INDEX_TYPE_UINT16);
-            const glm::mat4 modelMatrix = object.modelMatrix();
+            const glm::mat4 modelMatrix = object->modelMatrix();
             const auto push = buildObjectPushConstants(modelMatrix, render);
             vkCmdPushConstants(commandBuffer, pipelineLayout,
                                VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
@@ -2606,7 +2615,7 @@ void VulkanRenderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t
             VkDeviceSize meshOffsets[] = {0};
             vkCmdBindVertexBuffers(commandBuffer, 0, 1, meshVertexBuffers, meshOffsets);
             vkCmdBindIndexBuffer(commandBuffer, meshBuffers.indexBuffer, 0, meshBuffers.indexType);
-            const glm::mat4 modelMatrix = object.modelMatrix();
+            const glm::mat4 modelMatrix = object->modelMatrix();
             const auto push = buildObjectPushConstants(modelMatrix, render);
             vkCmdPushConstants(commandBuffer, pipelineLayout,
                                VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
@@ -2740,16 +2749,16 @@ void VulkanRenderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t
         };
         bindReflectionMaterial(defaultTexture.descriptorSet);
 
-        for (const auto& object : scene.objects()) {
-            const auto& render = object.render();
+        for (const auto* object : scene.objectsCached()) {
+            const auto& render = object->render();
             if (!render.visible || render.albedoTexture == "__reflection__") {
                 continue;
             }
-            switch (object.mesh()) {
+            switch (object->mesh()) {
             case vkengine::MeshType::Cube: {
                 const auto& texture = getOrCreateTexture(render);
                 bindReflectionMaterial(texture.descriptorSet);
-                const glm::mat4 modelMatrix = object.modelMatrix();
+                const glm::mat4 modelMatrix = object->modelMatrix();
                 const auto push = buildObjectPushConstants(modelMatrix, render);
                 vkCmdPushConstants(commandBuffer, pipelineLayout,
                                    VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
@@ -2771,7 +2780,7 @@ void VulkanRenderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t
                 vkCmdBindIndexBuffer(commandBuffer, meshBuffers.indexBuffer, 0, meshBuffers.indexType);
                 const auto& texture = getOrCreateTexture(render);
                 bindReflectionMaterial(texture.descriptorSet);
-                const glm::mat4 modelMatrix = object.modelMatrix();
+                const glm::mat4 modelMatrix = object->modelMatrix();
                 const auto push = buildObjectPushConstants(modelMatrix, render);
                 vkCmdPushConstants(commandBuffer, pipelineLayout,
                                    VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
@@ -2925,19 +2934,19 @@ void VulkanRenderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t
         }
     }
 
-    for (const auto& object : objects) {
-        const auto& render = object.render();
+    for (const auto* object : objects) {
+        const auto& render = object->render();
         if (!render.visible) {
             continue;
         }
 
-        switch (object.mesh()) {
+        switch (object->mesh()) {
         case vkengine::MeshType::Cube: {
             vkCmdBindVertexBuffers(commandBuffer, 0, 1, cubeVertexBuffers, cubeOffsets);
             vkCmdBindIndexBuffer(commandBuffer, indexBuffer, 0, VK_INDEX_TYPE_UINT16);
             const auto& texture = getOrCreateTexture(render);
             bindMaterialSet(texture.descriptorSet);
-            const glm::mat4 modelMatrix = object.modelMatrix();
+            const glm::mat4 modelMatrix = object->modelMatrix();
             const auto push = buildObjectPushConstants(modelMatrix, render);
             vkCmdPushConstants(commandBuffer, pipelineLayout,
                                VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
@@ -2952,7 +2961,7 @@ void VulkanRenderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t
             vkCmdBindVertexBuffers(commandBuffer, 0, 1, lineBuffers, lineOffsets);
             const auto& texture = getOrCreateTexture(render);
             bindMaterialSet(texture.descriptorSet);
-            const glm::mat4 modelMatrix = object.modelMatrix();
+            const glm::mat4 modelMatrix = object->modelMatrix();
             const auto push = buildObjectPushConstants(modelMatrix, render);
             vkCmdPushConstants(commandBuffer, pipelineLayout,
                                VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
@@ -2975,7 +2984,7 @@ void VulkanRenderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t
             vkCmdBindIndexBuffer(commandBuffer, meshBuffers.indexBuffer, 0, meshBuffers.indexType);
             const auto& texture = getOrCreateTexture(render);
             bindMaterialSet(texture.descriptorSet);
-            const glm::mat4 modelMatrix = object.modelMatrix();
+            const glm::mat4 modelMatrix = object->modelMatrix();
             const auto push = buildObjectPushConstants(modelMatrix, render);
             vkCmdPushConstants(commandBuffer, pipelineLayout,
                                VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
@@ -3473,13 +3482,13 @@ void VulkanRenderer::updateUniformBuffer(uint32_t currentImage)
     glm::mat4 reflectionProj = proj;
     glm::vec3 reflectionCameraPosition = cameraPosition;
 
-    for (const auto& object : scene.objects()) {
-        const auto& render = object.render();
+    for (const auto* object : scene.objectsCached()) {
+        const auto& render = object->render();
         if (render.albedoTexture != "__reflection__") {
             continue;
         }
 
-        const glm::mat4 modelMatrix = object.modelMatrix();
+        const glm::mat4 modelMatrix = object->modelMatrix();
         glm::vec3 planeNormal = glm::normalize(glm::mat3(modelMatrix) * glm::vec3(0.0f, 0.0f, 1.0f));
         if (!std::isfinite(planeNormal.x) || glm::length2(planeNormal) < 1e-4f) {
             planeNormal = glm::vec3(0.0f, 0.0f, 1.0f);
@@ -3708,7 +3717,7 @@ void VulkanRenderer::updateDeformableMeshes()
     }
 
     std::vector<glm::vec3> normals;
-    const auto& objects = engine->scene().objects();
+    const auto& objects = engine->scene().objectsCached();
     auto appendSoftBody = [&](const auto* body, const glm::vec4& pinnedColor, const glm::vec4& freeColor,
                               const vkengine::GameObject& object) {
         if (body == nullptr) {
@@ -3747,19 +3756,19 @@ void VulkanRenderer::updateDeformableMeshes()
         });
     };
 
-    for (const auto& object : objects) {
-        switch (object.mesh()) {
+    for (const auto* object : objects) {
+        switch (object->mesh()) {
         case vkengine::MeshType::DeformableCloth:
-            appendSoftBody(object.deformable(),
+            appendSoftBody(object->deformable(),
                            glm::vec4(0.95f, 0.35f, 0.35f, 1.0f),
                            glm::vec4(0.25f, 0.7f, 1.0f, 1.0f),
-                           object);
+                           *object);
             break;
         case vkengine::MeshType::SoftBodyVolume:
-            appendSoftBody(object.softBody(),
+            appendSoftBody(object->softBody(),
                            glm::vec4(1.0f, 0.3f, 0.55f, 1.0f),
                            glm::vec4(0.6f, 0.9f, 0.7f, 1.0f),
-                           object);
+                           *object);
             break;
         default:
             break;
@@ -3872,7 +3881,7 @@ void VulkanRenderer::drawFrame()
         throw std::runtime_error("Failed to present swap chain image");
     }
 
-    currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
+    currentFrame = (currentFrame + 1) % framesInFlight;
 }
 
 uint32_t VulkanRenderer::findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties) const
@@ -4427,4 +4436,57 @@ VkShaderModule VulkanRenderer::createShaderModule(const std::vector<char>& code)
     }
 
     return shaderModule;
+}
+
+// ============================================================================
+// Public ImGui-texture helpers
+// ============================================================================
+
+ImTextureID VulkanRenderer::registerImGuiTexture(const vkengine::TextureData& textureData) {
+    TextureResource res{};
+    uploadTextureToGpu("__imgui_user__", textureData, res);
+    VkDescriptorSet dsId = uiLayer.registerTexture(
+        materialSampler, res.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    imguiUserTextures[dsId] = res;
+    return reinterpret_cast<ImTextureID>(dsId);
+}
+
+void VulkanRenderer::updateImGuiTexture(ImTextureID handle, const vkengine::TextureData& textureData) {
+    auto ds = reinterpret_cast<VkDescriptorSet>(handle);
+    auto it = imguiUserTextures.find(ds);
+    if (it == imguiUserTextures.end()) return;
+
+    // Destroy old GPU resources but keep the descriptor set alive.
+    TextureResource& res = it->second;
+    // Unregister from ImGui (we will re-register with the new view).
+    uiLayer.unregisterTexture(ds);
+
+    // Destroy old Vulkan objects.
+    destroyTextureResource(res);
+    res = {};
+
+    // Upload new data.
+    uploadTextureToGpu("__imgui_user__", textureData, res);
+
+    // Re-register with ImGui – may return a different descriptor set.
+    VkDescriptorSet newDs = uiLayer.registerTexture(
+        materialSampler, res.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+    if (newDs != ds) {
+        imguiUserTextures.erase(it);
+        imguiUserTextures[newDs] = res;
+    }
+    // Note: the caller should use the returned ImTextureID from registerImGuiTexture
+    // and call updateImGuiTexture with the same handle.  If the underlying DS changed,
+    // the old handle is no longer valid – but for typical usage this is fine because
+    // ImGui::Image() is called each frame with the latest handle.
+}
+
+void VulkanRenderer::destroyImGuiTexture(ImTextureID handle) {
+    auto ds = reinterpret_cast<VkDescriptorSet>(handle);
+    auto it = imguiUserTextures.find(ds);
+    if (it == imguiUserTextures.end()) return;
+    uiLayer.unregisterTexture(ds);
+    destroyTextureResource(it->second);
+    imguiUserTextures.erase(it);
 }

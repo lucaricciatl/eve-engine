@@ -776,7 +776,7 @@ void GpuCollisionSystem::insertMemoryBarrier(VkCommandBuffer cmd)
 
 void GpuCollisionSystem::uploadColliders(Scene& scene)
 {
-    auto& objects = scene.objects();
+    const auto& objects = scene.objectsCached();
 
     cpuColliders.clear();
     objectIndexMap.clear();
@@ -785,7 +785,7 @@ void GpuCollisionSystem::uploadColliders(Scene& scene)
 
     uint32_t gpuIndex = 0;
     for (size_t i = 0; i < objects.size(); ++i) {
-        const auto& object = objects[i];
+        const auto& object = *objects[i];
         if (!object.hasCollider()) {
             continue;
         }

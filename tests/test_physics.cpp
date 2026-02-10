@@ -51,7 +51,7 @@ TEST(PhysicsHelpers, WorldHalfExtentsRespectScale)
     object.transform().scale = {2.0f, 1.0f, 0.5f};
     object.enableCollider(glm::vec3(1.0f, 2.0f, 3.0f), false);
 
-    EXPECT_EQ(worldHalfExtents(object), glm::vec3(2.0f, 2.0f, 1.5f));
+    EXPECT_EQ(worldHalfExtents(object), glm::vec3(1.0f, 2.0f, 3.0f));
 }
 
 TEST(PhysicsHelpers, InverseInertiaTensorZeroWhenStatic)
@@ -60,14 +60,13 @@ TEST(PhysicsHelpers, InverseInertiaTensorZeroWhenStatic)
     auto& object = scene.createObject("Static", MeshType::Cube);
     object.enableCollider(glm::vec3(1.0f), /*isStatic=*/true);
 
-    EXPECT_EQ(inverseInertiaTensor(object), glm::vec3(0.0f));
+    EXPECT_EQ(inverseInertiaTensor(object), glm::mat3(0.0f));
 }
 
 TEST(PhysicsHelpers, InverseInertiaTensorMatchesBox)
 {
     Scene scene;
     auto& object = createDynamicCube(scene, "Dynamic", glm::vec3(0.0f), glm::vec3(0.5f), 2.0f);
-    object.transform().scale = glm::vec3(2.0f, 1.0f, 3.0f);
 
     const glm::vec3 size = worldHalfExtents(object) * 2.0f;
     const float factor = object.physics().mass / 12.0f;
@@ -77,15 +76,24 @@ TEST(PhysicsHelpers, InverseInertiaTensorMatchesBox)
         factor * (size.x * size.x + size.y * size.y)
     };
 
-    const glm::vec3 inverse = inverseInertiaTensor(object);
-    EXPECT_FLOAT_EQ(inverse.x, 1.0f / expected.x);
-    EXPECT_FLOAT_EQ(inverse.y, 1.0f / expected.y);
-    EXPECT_FLOAT_EQ(inverse.z, 1.0f / expected.z);
+    const glm::mat3 body = inertiaTensorBody(object);
+    EXPECT_FLOAT_EQ(body[0][0], expected.x);
+    EXPECT_FLOAT_EQ(body[1][1], expected.y);
+    EXPECT_FLOAT_EQ(body[2][2], expected.z);
+
+    const glm::mat3 inverse = inverseInertiaTensor(object);
+    EXPECT_FLOAT_EQ(inverse[0][0], 1.0f / expected.x);
+    EXPECT_FLOAT_EQ(inverse[1][1], 1.0f / expected.y);
+    EXPECT_FLOAT_EQ(inverse[2][2], 1.0f / expected.z);
 }
 
 TEST(PhysicsHelpers, ApplyInverseInertiaScalesComponents)
 {
-    const glm::vec3 inverse{2.0f, 0.5f, 4.0f};
+    const glm::mat3 inverse{
+        2.0f, 0.0f, 0.0f,
+        0.0f, 0.5f, 0.0f,
+        0.0f, 0.0f, 4.0f
+    };
     const glm::vec3 value{1.0f, 2.0f, -3.0f};
     EXPECT_EQ(applyInverseInertia(inverse, value), glm::vec3(2.0f, 1.0f, -12.0f));
 }
@@ -151,6 +159,74 @@ TEST(PhysicsSystemTests, CollisionsSeparateObjects)
     const float separation = std::abs(right.transform().position.x - left.transform().position.x);
     EXPECT_GT(separation, 0.82f);
     EXPECT_GE(right.transform().position.x, left.transform().position.x);
+}
+
+TEST(PhysicsSystemTests, AngularMomentumConservedWithoutTorque)
+{
+    Scene scene;
+    auto& object = createDynamicCube(scene, "Spin", {0.0f, 0.0f, 0.0f}, glm::vec3(0.3f, 0.6f, 0.9f), 2.0f);
+    object.physics().angularVelocity = glm::vec3(0.2f, 0.6f, -0.4f);
+    object.physics().angularDamping = 0.0f;
+    object.physics().accumulatedTorque = glm::vec3(0.0f);
+
+    const glm::mat3 inertiaStart = inertiaTensor(object);
+    const glm::vec3 angularMomentumStart = inertiaStart * object.physics().angularVelocity;
+
+    PhysicsSystem system;
+    system.setGravity({0.0f, 0.0f, 0.0f});
+    system.update(scene, 0.016f);
+
+    const glm::mat3 inertiaEnd = inertiaTensor(object);
+    const glm::vec3 angularMomentumEnd = inertiaEnd * object.physics().angularVelocity;
+
+    const float startMag = glm::length(angularMomentumStart);
+    const float endMag = glm::length(angularMomentumEnd);
+    EXPECT_NEAR(startMag, endMag, 1e-2f);
+}
+
+TEST(PhysicsSystemTests, AngularDampingDissipatesEnergy)
+{
+    Scene scene;
+    auto& object = createDynamicCube(scene, "DampedSpin", {0.0f, 0.0f, 0.0f}, glm::vec3(0.4f), 2.0f);
+    object.physics().angularVelocity = glm::vec3(0.0f, 2.0f, 0.0f);
+    object.physics().angularDamping = 0.0f;
+    object.physics().dynamicFriction = 0.8f;
+    object.physics().restitution = 0.1f;
+    object.physics().accumulatedTorque = glm::vec3(0.0f);
+
+    PhysicsSystem system;
+    system.setGravity({0.0f, 0.0f, 0.0f});
+    system.update(scene, 0.5f);
+
+    const float speedAfter = glm::length(object.physics().angularVelocity);
+    EXPECT_LT(speedAfter, 2.0f);
+}
+
+TEST(PhysicsSystemTests, HigherMaterialDissipationSlowsSpinMore)
+{
+    Scene scene;
+    auto& low = createDynamicCube(scene, "LowDiss", {0.0f, 0.0f, 0.0f}, glm::vec3(0.4f), 2.0f);
+    auto& high = createDynamicCube(scene, "HighDiss", {0.0f, 0.0f, 0.0f}, glm::vec3(0.4f), 2.0f);
+
+    low.physics().angularVelocity = glm::vec3(0.0f, 2.0f, 0.0f);
+    high.physics().angularVelocity = glm::vec3(0.0f, 2.0f, 0.0f);
+
+    low.physics().angularDamping = 0.0f;
+    high.physics().angularDamping = 0.0f;
+
+    low.physics().dynamicFriction = 0.1f;
+    low.physics().restitution = 0.9f;
+
+    high.physics().dynamicFriction = 0.9f;
+    high.physics().restitution = 0.1f;
+
+    PhysicsSystem system;
+    system.setGravity({0.0f, 0.0f, 0.0f});
+    system.update(scene, 0.5f);
+
+    const float lowSpeed = glm::length(low.physics().angularVelocity);
+    const float highSpeed = glm::length(high.physics().angularVelocity);
+    EXPECT_LT(highSpeed, lowSpeed);
 }
 
 } // namespace

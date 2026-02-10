@@ -206,7 +206,7 @@ private:
             components.clear();
         }
 
-    std::map<EntityId, Component> components;
+    std::unordered_map<EntityId, Component> components;
     };
 
     template <typename Component>

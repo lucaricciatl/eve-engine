@@ -10,6 +10,8 @@
 
 #include <glm/glm.hpp>
 
+#include <cmath>
+
 #include <cstdlib>
 #include <iostream>
 #include <random>
@@ -53,6 +55,7 @@ int main(int argc, char** argv)
         std::uniform_real_distribution<float> colorDist(0.3f, 1.0f);
         std::uniform_real_distribution<float> scaleDist(0.3f, 0.8f);
         std::uniform_real_distribution<float> rotationDist(0.0f, 6.283185f); // 0 to 2*PI
+        std::uniform_real_distribution<float> angularMomentumDist(-0.4f, 0.4f);
 
         // Create dynamic cubes for collision test
         constexpr int NUM_CUBES = 30;
@@ -93,6 +96,38 @@ int main(int argc, char** argv)
             
             // Enable collision - half extents = scale * 0.5 (unit cube has half-extent 0.5)
             cube.enableCollider(glm::vec3{halfExtent});
+
+            // Define inertia for a uniform-mass cube and seed angular velocity from angular momentum
+            const vkengine::Collider* collider = cube.collider();
+            const auto& props = cube.physics();
+            if (collider && props.mass > 0.0f && std::isfinite(props.mass)) {
+                const glm::vec3 size = collider->halfExtents * 2.0f;
+                const float factor = props.mass / 12.0f;
+
+                constexpr float minInertia = 0.001f;
+                const float ix = std::max(minInertia, factor * (size.y * size.y + size.z * size.z));
+                const float iy = std::max(minInertia, factor * (size.x * size.x + size.z * size.z));
+                const float iz = std::max(minInertia, factor * (size.x * size.x + size.y * size.y));
+
+                const glm::mat3 bodyInertia{
+                    ix, 0.0f, 0.0f,
+                    0.0f, iy, 0.0f,
+                    0.0f, 0.0f, iz
+                };
+
+                const glm::vec3 angularMomentum{
+                    angularMomentumDist(gen),
+                    angularMomentumDist(gen),
+                    angularMomentumDist(gen)
+                };
+
+                const glm::vec3 invInertia{
+                    ix > 0.0f ? 1.0f / ix : 0.0f,
+                    iy > 0.0f ? 1.0f / iy : 0.0f,
+                    iz > 0.0f ? 1.0f / iz : 0.0f
+                };
+                cube.physics().angularVelocity = invInertia * angularMomentum;
+            }
             
             // Random color
             cube.setBaseColor(glm::vec3{

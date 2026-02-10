@@ -4,6 +4,7 @@
 
 #include <glm/gtc/constants.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtx/quaternion.hpp>
 
 #include <algorithm>
 #include <cmath>
@@ -229,25 +230,15 @@ AABB GameObject::worldBounds() const
     const glm::vec3 halfSize = colliderData->halfExtents;
     
     // Compute rotation matrix from Euler angles
-    const glm::vec3& rot = transformComponent.rotation;
-    const float cx = std::cos(rot.x), sx = std::sin(rot.x);
-    const float cy = std::cos(rot.y), sy = std::sin(rot.y);
-    const float cz = std::cos(rot.z), sz = std::sin(rot.z);
-    
-    // Rotation matrix (ZYX order)
-    // We only need the absolute values of the matrix elements for AABB computation
+    const glm::mat3 rotation = glm::mat3_cast(glm::quat(transformComponent.rotation));
     const glm::mat3 absRotation{
-        std::abs(cy * cz), std::abs(cy * sz), std::abs(sy),
-        std::abs(sx * sy * cz - cx * sz), std::abs(sx * sy * sz + cx * cz), std::abs(sx * cy),
-        std::abs(cx * sy * cz + sx * sz), std::abs(cx * sy * sz - sx * cz), std::abs(cx * cy)
+        glm::abs(rotation[0]),
+        glm::abs(rotation[1]),
+        glm::abs(rotation[2])
     };
     
     // Transform half extents by absolute rotation matrix to get rotated AABB half extents
-    const glm::vec3 rotatedHalfSize{
-        absRotation[0][0] * halfSize.x + absRotation[1][0] * halfSize.y + absRotation[2][0] * halfSize.z,
-        absRotation[0][1] * halfSize.x + absRotation[1][1] * halfSize.y + absRotation[2][1] * halfSize.z,
-        absRotation[0][2] * halfSize.x + absRotation[1][2] * halfSize.y + absRotation[2][2] * halfSize.z
-    };
+    const glm::vec3 rotatedHalfSize = absRotation * halfSize;
     
     return {transformComponent.position - rotatedHalfSize, transformComponent.position + rotatedHalfSize};
 }
@@ -545,9 +536,31 @@ GameObject& Scene::createObject(const std::string& name, MeshType meshType)
     ecsRegistry.emplace<Transform>(entity, Transform{});
     ecsRegistry.emplace<PhysicsProperties>(entity, PhysicsProperties{});
     ecsRegistry.emplace<RenderComponent>(entity, RenderComponent{meshType});
-    ecsRegistry.emplace<ColliderComponent>(entity, ColliderComponent{});
     gameObjects.emplace_back(*this, entity);
+    objectCache.push_back(&gameObjects.back());
     return gameObjects.back();
+}
+
+std::vector<GameObject*> Scene::createObjects(std::size_t count, MeshType meshType, const std::string& namePrefix)
+{
+    std::vector<GameObject*> created;
+    created.reserve(count);
+    objectCache.reserve(objectCache.size() + count);
+
+    for (std::size_t i = 0; i < count; ++i) {
+        const std::string requestedName = namePrefix.empty() ? std::string{} : (namePrefix + std::to_string(nextId));
+        auto entity = ecsRegistry.createEntity();
+        ecsRegistry.emplace<NameComponent>(entity, NameComponent{makeName(requestedName, "Object_", nextId)});
+        ecsRegistry.emplace<Transform>(entity, Transform{});
+        ecsRegistry.emplace<PhysicsProperties>(entity, PhysicsProperties{});
+        ecsRegistry.emplace<RenderComponent>(entity, RenderComponent{meshType});
+        gameObjects.emplace_back(*this, entity);
+        GameObject* objectPtr = &gameObjects.back();
+        created.push_back(objectPtr);
+        objectCache.push_back(objectPtr);
+    }
+
+    return created;
 }
 
 Light& Scene::createLight(const std::string& name)
@@ -583,6 +596,7 @@ void Scene::clear()
     nextId = 0;
     ecsRegistry.clear();
     gameObjects.clear();
+    objectCache.clear();
     sceneLights.clear();
 }
 
@@ -591,17 +605,17 @@ void GameEngine::update(float deltaSeconds)
     physicsSystem.update(activeScene, deltaSeconds);
     particleSystem.update(deltaSeconds);
 
-    std::vector<DeformableBody*> cloths;
-    std::vector<SoftBodyVolume*> softBodies;
-    cloths.reserve(activeScene.objects().size());
-    softBodies.reserve(activeScene.objects().size());
+        std::vector<DeformableBody*> cloths;
+        std::vector<SoftBodyVolume*> softBodies;
+        cloths.reserve(activeScene.objectsCached().size());
+        softBodies.reserve(activeScene.objectsCached().size());
 
-    for (auto& object : activeScene.objects()) {
-        if (auto* cloth = object.deformable()) {
+    for (auto* object : activeScene.objectsCached()) {
+        if (auto* cloth = object->deformable()) {
             cloths.push_back(cloth);
         }
-        if (auto* soft = object.softBody()) {
-            softBodies.push_back(soft);
+        if (auto* softBody = object->softBody()) {
+            softBodies.push_back(softBody);
         }
     }
 
